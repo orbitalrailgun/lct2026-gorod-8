@@ -1,0 +1,17 @@
+# --- Веб-интерфейс ---
+nicegui==2.* 
+
+# --- Данные и аналитика ---
+duckdb==1.*
+pandas==2.*
+numpy==1.*
+pyarrow==18.*
+
+# --- ML ---
+scikit-learn==1.*
+
+# --- Отчёты ---
+openpyxl==3.*
+
+# --- Утилиты ---
+python-dateutil==2.*

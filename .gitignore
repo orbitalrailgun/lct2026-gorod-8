@@ -1,0 +1,53 @@
+# ---- Данные (16 ГБ, в репозиторий не кладём) ----
+dataset/
+dataset.zip
+*.csv
+*.7z
+*.zip
+*.parquet
+*.duckdb
+*.duckdb.wal
+data/
+artifacts/
+
+# ---- Модели и выгрузки ----
+models/*.pkl
+models/*.joblib
+reports/*.xlsx
+reports/*.pdf
+
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# ---- Окружение и секреты ----
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+
+# ---- ОС и IDE ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+# ---- Логи ----
+*.log
+logs/
