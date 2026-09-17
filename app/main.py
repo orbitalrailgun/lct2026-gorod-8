@@ -82,6 +82,7 @@ def header():
         with ui.row().classes("items-center gap-3"):
             ui.button("Очередь", on_click=lambda: ui.navigate.to("/")).props("flat dense color=white")
             ui.button("Схема", on_click=lambda: ui.navigate.to("/scheme")).props("flat dense color=white")
+            ui.button("Журнал", on_click=lambda: ui.navigate.to("/journal")).props("flat dense color=white")
             ui.select(
                 ["техник", "диспетчер_района", "диспетчер_одс", "группа_реагирования"],
                 value=STATE["role"], label="роль",
@@ -131,6 +132,16 @@ def verdict_card(v):
 
         if card.get("counterfactual"):
             ui.label(card["counterfactual"]).classes("text-sm italic opacity-80")
+
+        if card.get("recommendation"):
+            with ui.card().classes("bg-emerald-50 w-full p-2"):
+                with ui.row().classes("items-start gap-2"):
+                    ui.icon("build").classes("text-emerald-700 mt-1")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Что делать").classes("text-xs font-semibold opacity-70")
+                        ui.label(card["recommendation"]).classes("text-sm")
+                        if card.get("precedent"):
+                            ui.label(card["precedent"]).classes("text-xs opacity-70")
 
         with ui.row().classes("w-full justify-end gap-2"):
             if new:
@@ -223,7 +234,8 @@ def index():
         with ui.row().classes("w-full items-center justify-between"):
             ui.label("Очередь на проверку").classes("text-xl font-semibold")
             ui.select({None: "все сценарии", "отказ": "отказы",
-                       "подтопление": "подтопление", "пожар": "задымление"},
+                       "подтопление": "подтопление", "пожар": "задымление",
+                       "проникновение": "проникновение"},
                       value=None, label="сценарий",
                       on_change=lambda e: (STATE.update(scenario=e.value), feed.refresh())
                       ).props("dense outlined").classes("w-52")
@@ -311,6 +323,70 @@ def scheme_page():
                             f'border-radius:50%;background:{color}"></span>')
                     ui.label(label)
         ui.label("Размер точки пропорционален вероятности.").classes("text-xs opacity-60")
+
+
+@ui.page("/journal")
+def journal_page():
+    """Журнал прогнозов: что предсказали и чем это кончилось.
+
+    Требование ТЗ — реестр событий с историей прогнозов и результатами их
+    отработки. Он же со временем становится источником разметки: пары
+    «вердикт — решение диспетчера» это ровно то, чего сейчас нет ни у нас,
+    ни у заказчика.
+    """
+    header()
+    con = get_con()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("Журнал прогнозов").classes("text-xl font-semibold")
+        ui.label(
+            "История вердиктов и принятых по ним решений. Накопленные пары "
+            "«прогноз — исход» используются для дообучения."
+        ).classes("text-sm opacity-70")
+
+        if con is None:
+            ui.label("Оперативный контур недоступен").classes("opacity-60")
+            return
+
+        with con.cursor() as cur:
+            cur.execute("""
+                SELECT v.id, v.created_at, v.scenario, v.object_name, v.picket,
+                       v.probability, v.status,
+                       d.action, r.title AS reason, u.full_name, d.decided_at
+                FROM verdict v
+                LEFT JOIN decision d ON d.verdict_id = v.id
+                LEFT JOIN reason_ref r ON r.id = d.reason_id
+                LEFT JOIN app_user u ON u.id = d.user_id
+                ORDER BY v.probability DESC LIMIT 200
+            """)
+            cols = [c.name for c in cur.description]
+            rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        closed = [r for r in rows if r["status"] == "закрыт"]
+        false_alarms = [r for r in closed if r["reason"] in
+                        ("Ложное срабатывание", "Профилактика", "Плановая проверка",
+                         "Технологические испытания")]
+        with ui.row().classes("w-full gap-4"):
+            for title, value in (("Всего вердиктов", len(rows)),
+                                 ("Отработано", len(closed)),
+                                 ("Признано ложными", len(false_alarms))):
+                with ui.card().classes("flex-1"):
+                    ui.label(str(value)).classes("text-2xl font-bold")
+                    ui.label(title).classes("text-xs opacity-70")
+
+        ui.table(
+            columns=[
+                {"name": "id", "label": "№", "field": "id", "align": "left"},
+                {"name": "scenario", "label": "сценарий", "field": "scenario"},
+                {"name": "object_name", "label": "объект", "field": "object_name"},
+                {"name": "picket", "label": "ПК", "field": "picket"},
+                {"name": "prob", "label": "риск", "field": "prob"},
+                {"name": "status", "label": "статус", "field": "status"},
+                {"name": "action", "label": "решение", "field": "action"},
+                {"name": "reason", "label": "причина", "field": "reason"},
+            ],
+            rows=[{**r, "prob": f"{r['probability']:.0%}"} for r in rows],
+            row_key="id",
+        ).classes("w-full").props("dense flat")
 
 
 # ------------------------------------------------------------- REST API

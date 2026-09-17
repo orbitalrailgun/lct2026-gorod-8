@@ -27,7 +27,8 @@ def main():
         etl.load_mart(con, m)
     models = scoring.load_model()
 
-    for m in ("pump_anomaly", "pump_network", "fire_candidate"):
+    for m in ("pump_anomaly", "pump_network", "fire_candidate",
+              "intrusion_event", "fact_channel_day"):
         etl.load_mart(con, m)
 
     verdicts = scoring.score_day(con, models, LAST_DAY, limit=120)
@@ -36,7 +37,9 @@ def main():
     print(f"M2 подтопление: {len(pumps_v):>4}")
     fire_v = scoring.score_fire(con, LAST_DAY, limit=20)
     print(f"M3 пожар:       {len(fire_v):>4}")
-    verdicts = verdicts + pumps_v + fire_v
+    intr_v = scoring.score_intrusion_day(con, LAST_DAY, limit=20)
+    print(f"M4 проникновение: {len(intr_v):>2}")
+    verdicts = verdicts + pumps_v + fire_v + intr_v
     verdicts.sort(key=lambda r: -r["probability"])
     print(f"всего на {LAST_DAY}: {len(verdicts)}")
 

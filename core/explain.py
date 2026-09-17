@@ -125,11 +125,13 @@ def observability_note(domain_size, domain_silent_share, has_thermal=None):
 
 
 def build_card(verdict_type, location, probability, bias, evidence,
-               negatives=None, observability=None, counterfactual_text=None):
+               negatives=None, observability=None, counterfactual_text=None,
+               recommendation=None, precedent=None):
     """Карточка вердикта целиком — то, что видит диспетчер.
 
-    Четыре обязательные части: что, почему, что это НЕ, и чего мы не видим.
-    Последняя часть не косметика: она отличает «всё в порядке» от «я не знаю».
+    Пять частей: что, почему, что это НЕ, чего мы не видим и что делать.
+    Предпоследняя отличает «всё в порядке» от «я не знаю». Последняя нужна
+    бригаде на объекте: прогноз без действия для неё бесполезен.
     """
     return {
         "type": verdict_type,
@@ -140,6 +142,8 @@ def build_card(verdict_type, location, probability, bias, evidence,
         "not_this": negatives or [],
         "blind_spots": observability or [],
         "counterfactual": counterfactual_text,
+        "recommendation": recommendation,
+        "precedent": precedent,
     }
 
 
@@ -165,4 +169,9 @@ def render_card(card):
     if card["counterfactual"]:
         lines.append("")
         lines.append(card["counterfactual"])
+    if card.get("recommendation"):
+        lines.append("")
+        lines.append("Что делать: " + card["recommendation"])
+    if card.get("precedent"):
+        lines.append(card["precedent"])
     return "\n".join(lines)

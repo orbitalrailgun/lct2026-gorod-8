@@ -26,7 +26,7 @@ def load_model(path=None):
         return pickle.load(fh)["models"]
 
 
-def score_day(con, models, day, limit=100, horizon_hours=None):
+def score_day(con, models, day, limit=100, horizon_hours=None, with_precedent=True):
     """Считает вердикты на конкретные сутки и возвращает готовые карточки."""
     horizon_hours = horizon_hours or config.HORIZON_HOURS
     cols = ", ".join(FEATURE_NAMES)
@@ -54,8 +54,11 @@ def score_day(con, models, day, limit=100, horizon_hours=None):
         row = df.iloc[i]
         values = {name: row[name] for name in FEATURE_NAMES}
         bias, evidence = explain.top_evidence(models["forest"], X[i], values, k=4)
-        verdicts.append(_build(row, float(scores[i]), bias, evidence,
-                               models, X[i], horizon_hours))
+        v = _build(row, float(scores[i]), bias, evidence, models, X[i], horizon_hours)
+        if with_precedent:
+            v["card"]["precedent"] = find_precedent(
+                con, v["object_id"], v["picket"], day)
+        verdicts.append(v)
     return verdicts
 
 
@@ -132,6 +135,7 @@ def _build(row, probability, bias, evidence, models, x, horizon_hours):
         negatives=_negatives(row),
         observability=blind,
         counterfactual_text=cf_text,
+        recommendation=recommend("отказ", row.get("sensor_type")),
     )
     card["sensor_name"] = row.get("sensor_name")
     card["sensor_type"] = row.get("sensor_type")
@@ -216,6 +220,7 @@ def score_pumps(con, day, limit=50):
             location=_location(row), probability=prob, bias=0.0,
             evidence=evidence, negatives=negatives, observability=blind,
             counterfactual_text=None,
+            recommendation=recommend("подтопление"),
         )
         card["sensor_name"] = row["sensor_name"]
         card["sensor_type"] = "Состояние насоса"
@@ -268,6 +273,7 @@ def score_fire(con, day, limit=20):
                       if not row["is_sweep"] else [],
             observability=fire.blind_spot_note(row),
             counterfactual_text=None,
+            recommendation=recommend("пожар"),
         )
         card["sensor_name"] = row["sample_name"]
         card["sensor_type"] = "Датчик дыма"
@@ -282,3 +288,103 @@ def score_fire(con, day, limit=20):
         })
     out.sort(key=lambda r: -r["probability"])
     return out[:limit]
+
+
+# ----------------------------------------------- M4 «проникновение»
+
+def score_intrusion_day(con, day, limit=20):
+    """Вердикты по охранному контуру.
+
+    Правила, а не модель: разметки проникновений нет и не будет. Приоритет
+    сценария заказчик понизил сам, поэтому здесь минимальная достаточная логика —
+    режим охраны, кратность по типам датчиков и время суток.
+    """
+    from core import intrusion
+
+    df = con.execute(f"""
+        SELECT * FROM intrusion_event WHERE d = DATE '{day}'
+    """).df()
+    if df.empty:
+        return []
+
+    out = []
+    for _, row in df.iterrows():
+        score, why = intrusion.score_intrusion(row)
+        if score < 0.3:
+            continue
+        evidence = [{"feature": "intrusion", "group": "охрана",
+                     "value": float(row["n_types"]), "contribution": score / max(len(why), 1),
+                     "phrase": w} for w in why]
+        loc = f"{row['parent_name'] or row['object_name']}, ПК{int(row['picket'])}"
+        card = explain.build_card(
+            verdict_type="возможное проникновение",
+            location=loc, probability=float(score), bias=0.0, evidence=evidence,
+            negatives=["плановые работы: объект в этот момент был под охраной"]
+                      if int(row["armed_trit"]) == 1 else [],
+            observability=intrusion.blind_spot_note(row),
+            counterfactual_text=None,
+            recommendation=recommend("проникновение"),
+        )
+        card["sensor_name"] = row["sample_name"]
+        card["sensor_type"] = "Охранный контур"
+        out.append({
+            "scenario": "проникновение",
+            "object_id": int(row["object_id"]),
+            "object_name": row["parent_name"] or row["object_name"],
+            "picket": int(row["picket"]),
+            "channel_id": None,
+            "probability": float(score), "horizon_hours": 24,
+            "model_version": "m4-intrusion-v1", "card": card,
+        })
+    out.sort(key=lambda r: -r["probability"])
+    return out[:limit]
+
+
+# ------------------------------------------- рекомендации и прецеденты
+
+# Что делать — четвёртый вопрос карточки. Первые три отвечают «что», «почему»
+# и «чего мы не видим», но бригаде на объекте нужен ответ на «что с этим делать».
+# Тексты заведены таблицей, чтобы их правила команда, а не разработчик.
+ACTIONS = {
+    ("отказ", "Датчик дыма"): "Проверить шлейф пожарной сигнализации на участке и питание шкафа ОПС.",
+    ("отказ", "Датчик температуры"): "Проверить линию связи датчика; при повторе — заменить измерительный элемент.",
+    ("отказ", "Газовый датчик"): "Проверить питание и калибровку газоанализатора.",
+    ("отказ", "КД Дверь"): "Проверить контактную группу и шлейф двери.",
+    ("отказ", "Датчик движения"): "Проверить питание извещателя и юстировку.",
+    ("отказ", None): "Проверить питание и линию связи канала.",
+    ("подтопление", None): "Осмотреть приямок и решётки, проверить работу насоса и уровень притока. "
+                           "При общесетевом водопритоке локальный ремонт не даст эффекта.",
+    ("пожар", None): "Направить бригаду для визуального осмотра участка. "
+                     "При отсутствии термоконтроля полагаться только на осмотр.",
+    ("проникновение", None): "Проверить целостность люков и дверей на участке, "
+                             "при подтверждении — вызвать группу реагирования.",
+}
+
+
+def recommend(scenario, sensor_type=None):
+    """Рекомендация по сценарию и типу оборудования."""
+    return (ACTIONS.get((scenario, sensor_type))
+            or ACTIONS.get((scenario, None))
+            or "Проверить состояние оборудования на участке.")
+
+
+def find_precedent(con, object_id, picket, before_day, scenario="отказ"):
+    """Похожий случай из истории — опора для решения диспетчера.
+
+    Заказчик описывает карточку инцидента как документ с историей. Прецедент
+    отвечает на вопрос «чем это кончилось в прошлый раз» и превращает вердикт
+    из абстрактной оценки в знакомую ситуацию.
+    """
+    if object_id is None or picket is None:
+        return None
+    row = con.execute(f"""
+        SELECT f.d, sum(f.n_fault + f.n_disabled) AS n_fault
+        FROM fact_channel_day f
+        JOIN dim_channel c ON c.channel_id = f.channel_id
+        WHERE c.object_id = {object_id} AND c.picket = {picket}
+          AND f.d < DATE '{before_day}' AND (f.n_fault + f.n_disabled) > 0
+        GROUP BY f.d ORDER BY f.d DESC LIMIT 1
+    """).fetchone()
+    if not row:
+        return None
+    return f"Похожий случай: {row[0]:%d.%m.%Y}, та же точка, {int(row[1])} сообщений о неисправности."
