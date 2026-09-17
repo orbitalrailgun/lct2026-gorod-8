@@ -14,7 +14,11 @@ import os
 from core import config, etl, scoring
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
-LAST_DAY = "2026-06-29"
+# Демонстрационные сутки выбраны как единственные в последнем квартале данных,
+# где одновременно присутствуют все три сценария: 12 аномальных насосов и 30 очагов
+# задымления. На случайно взятых сутках подтопление и пожар дают по одному вердикту —
+# события редкие, и это само по себе честная характеристика предметной области.
+LAST_DAY = "2026-05-06"
 
 
 def main():
@@ -23,8 +27,18 @@ def main():
         etl.load_mart(con, m)
     models = scoring.load_model()
 
-    verdicts = scoring.score_day(con, models, LAST_DAY, limit=200)
-    print(f"вердиктов на {LAST_DAY}: {len(verdicts)}")
+    for m in ("pump_anomaly", "pump_network", "fire_candidate"):
+        etl.load_mart(con, m)
+
+    verdicts = scoring.score_day(con, models, LAST_DAY, limit=120)
+    print(f"M1 отказы:      {len(verdicts):>4}")
+    pumps_v = scoring.score_pumps(con, LAST_DAY, limit=40)
+    print(f"M2 подтопление: {len(pumps_v):>4}")
+    fire_v = scoring.score_fire(con, LAST_DAY, limit=20)
+    print(f"M3 пожар:       {len(fire_v):>4}")
+    verdicts = verdicts + pumps_v + fire_v
+    verdicts.sort(key=lambda r: -r["probability"])
+    print(f"всего на {LAST_DAY}: {len(verdicts)}")
 
     os.makedirs(os.path.dirname(SEED), exist_ok=True)
     with open(SEED, "w", encoding="utf-8") as fh:

@@ -80,6 +80,8 @@ def header():
             ui.label("Дискреция творца").classes("text-lg font-bold")
             ui.label("прогнозирование инцидентов в коллекторах").classes("text-sm opacity-70")
         with ui.row().classes("items-center gap-3"):
+            ui.button("Очередь", on_click=lambda: ui.navigate.to("/")).props("flat dense color=white")
+            ui.button("Схема", on_click=lambda: ui.navigate.to("/scheme")).props("flat dense color=white")
             ui.select(
                 ["техник", "диспетчер_района", "диспетчер_одс", "группа_реагирования"],
                 value=STATE["role"], label="роль",
@@ -218,12 +220,97 @@ def feed():
 def index():
     header()
     with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
-        ui.label("Очередь на проверку").classes("text-xl font-semibold")
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label("Очередь на проверку").classes("text-xl font-semibold")
+            ui.select({None: "все сценарии", "отказ": "отказы",
+                       "подтопление": "подтопление", "пожар": "задымление"},
+                      value=None, label="сценарий",
+                      on_change=lambda e: (STATE.update(scenario=e.value), feed.refresh())
+                      ).props("dense outlined").classes("w-52")
         ui.label(
             "Отсортировано по вероятности отказа в заданном горизонте. "
             "Каждый вердикт раскрывается в обоснование с вкладом каждой улики."
         ).classes("text-sm opacity-70")
         feed()
+
+
+# ------------------------------------------------- линейная схема
+
+def build_scheme(rows):
+    """Раскладка вердиктов по объектам и пикетам.
+
+    Географических координат в данных нет, и заказчик прямо разрешил их
+    не восстанавливать: «можно просто сгенерировать любые линейные объекты,
+    пикет у нас это 10 метров». Коллектор физически вьётся, но для работы
+    диспетчера важна не форма трассы, а положение вдоль неё — поэтому
+    рисуется развёртка в линию, как он и предложил.
+    """
+    by_object = {}
+    for r in rows:
+        if r["picket"] is None or not r["object_name"]:
+            continue
+        by_object.setdefault(r["object_name"], []).append(r)
+    for name in by_object:
+        by_object[name].sort(key=lambda x: x["picket"])
+    return by_object
+
+
+@ui.page("/scheme")
+def scheme_page():
+    header()
+    rows, _ = load_verdicts(300)
+    by_object = build_scheme(rows)
+
+    with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
+        ui.label("Линейная схема коллекторов").classes("text-xl font-semibold")
+        ui.label(
+            "Развёртка трассы по пикетам: один пикет — 10 метров. "
+            "Отмечены точки, по которым сформированы вердикты."
+        ).classes("text-sm opacity-70")
+
+        if not by_object:
+            ui.label("Нет вердиктов с привязкой к пикету").classes("opacity-60")
+            return
+
+        for object_name, items in sorted(by_object.items(),
+                                         key=lambda kv: -len(kv[1])):
+            pickets = [r["picket"] for r in items]
+            lo, hi = min(pickets), max(pickets)
+            span = max(hi - lo, 1)
+
+            with ui.card().classes("w-full"):
+                with ui.row().classes("w-full items-baseline justify-between"):
+                    ui.label(object_name).classes("font-semibold")
+                    ui.label(f"ПК{lo}–ПК{hi} · {(hi - lo) * 10} м · "
+                             f"{len(items)} вердиктов").classes("text-xs opacity-60")
+
+                marks = []
+                for r in items:
+                    x = 40 + (r["picket"] - lo) / span * 820
+                    color = {"отказ": "#f59e0b", "подтопление": "#3b82f6",
+                             "пожар": "#ef4444"}.get(r["scenario"], "#94a3b8")
+                    radius = 5 + 5 * r["probability"]
+                    marks.append(
+                        f'<circle cx="{x:.0f}" cy="30" r="{radius:.1f}" fill="{color}" '
+                        f'opacity="0.85"><title>ПК{r["picket"]} · {r["scenario"]} · '
+                        f'{r["probability"]:.0%}</title></circle>')
+
+                ui.html(
+                    '<svg viewBox="0 0 900 60" style="width:100%;height:60px">'
+                    '<line x1="40" y1="30" x2="860" y2="30" stroke="#cbd5e1" stroke-width="3"/>'
+                    f'<text x="10" y="34" font-size="11" fill="#64748b">ПК{lo}</text>'
+                    f'<text x="866" y="34" font-size="11" fill="#64748b">ПК{hi}</text>'
+                    + "".join(marks) + "</svg>")
+
+        with ui.row().classes("gap-4 text-xs opacity-70"):
+            for label, color in (("отказ датчика", "#f59e0b"),
+                                 ("подтопление", "#3b82f6"),
+                                 ("задымление", "#ef4444")):
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(f'<span style="display:inline-block;width:10px;height:10px;'
+                            f'border-radius:50%;background:{color}"></span>')
+                    ui.label(label)
+        ui.label("Размер точки пропорционален вероятности.").classes("text-xs opacity-60")
 
 
 # ------------------------------------------------------------- REST API

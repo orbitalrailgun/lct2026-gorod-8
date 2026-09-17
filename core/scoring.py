@@ -148,3 +148,137 @@ def _build(row, probability, bias, evidence, models, x, horizon_hours):
         "model_version": MODEL_VERSION,
         "card": card,
     }
+
+
+# ------------------------------------------------- M2 «подтопление»
+
+def score_pumps(con, day, limit=50):
+    """Вердикты по аномалии откачки.
+
+    Формулировка повторяет ту, которую произнёс заказчик: «столько-то пусков
+    за сутки против нормы столько-то». Контекст сети отвечает на его же вопрос
+    «откуда вода»: один горячий насос — локальная течь, десяток — водоприток.
+    """
+    from core import pumps
+
+    df = con.execute(f"""
+        SELECT a.*, c.sensor_name, c.picket, c.object_id, c.object_name,
+               c.parent_name, n.n_hot, n.is_network_event
+        FROM pump_anomaly a
+        JOIN dim_channel c ON c.channel_id = a.channel_id
+        JOIN pump_network n ON n.d = a.d
+        WHERE a.d = DATE '{day}' AND a.trit = 1
+        ORDER BY a.robust_z DESC NULLS LAST
+        LIMIT {limit}
+    """).df()
+
+    out = []
+    for _, row in df.iterrows():
+        evidence = [{
+            "feature": "pump_starts",
+            "group": "откачка",
+            "value": float(row["n_starts"]),
+            "contribution": 0.5,
+            "phrase": pumps.verdict_phrase(row["n_starts"], row["med_starts"],
+                                           row["sensor_name"], row["picket"]),
+        }]
+        if row["ratio_to_norm"] and row["ratio_to_norm"] > 1:
+            evidence.append({
+                "feature": "ratio", "group": "откачка",
+                "value": float(row["ratio_to_norm"]), "contribution": 0.3,
+                "phrase": f"это в {row['ratio_to_norm']:.0f} раз выше личной нормы насоса",
+            })
+        if row["duty_seconds"] and row["duty_seconds"] > 0:
+            evidence.append({
+                "feature": "duty", "group": "откачка",
+                "value": float(row["duty_seconds"]), "contribution": 0.2,
+                "phrase": f"наработка за сутки {row['duty_seconds'] / 60:.0f} минут",
+            })
+
+        if row["is_network_event"]:
+            negatives = ["локальная течь: аномалия видна сразу на "
+                         f"{int(row['n_hot'])} насосах сети — это общий водоприток"]
+            blind = ["источник воды может быть выше по трассе: "
+                     "уклон коллектора в данных не задан"]
+        else:
+            negatives = [f"общесетевой водоприток: кроме этого насоса аномальны "
+                         f"лишь {int(row['n_hot']) - 1}"]
+            blind = ["датчики затопления в сети не дают сигнала — "
+                     "вода детектируется косвенно, по режиму откачки"]
+
+        # Вероятность ведём от кратности к личной норме и абсолютного объёма,
+        # а не от z-score: последний при малом разбросе даёт 99 % на пустом месте.
+        ratio = float(row["ratio_to_norm"] or 1.0)
+        excess = float(row["n_starts"]) - float(row["med_starts"] or 0)
+        prob = min(0.95, 0.25 + 0.12 * min(ratio, 6.0) + 0.004 * min(excess, 50.0))
+        card = explain.build_card(
+            verdict_type="аномальный режим откачки",
+            location=_location(row), probability=prob, bias=0.0,
+            evidence=evidence, negatives=negatives, observability=blind,
+            counterfactual_text=None,
+        )
+        card["sensor_name"] = row["sensor_name"]
+        card["sensor_type"] = "Состояние насоса"
+        out.append({
+            "scenario": "подтопление",
+            "object_id": None if _isnan(row.get("object_id")) else int(row["object_id"]),
+            "object_name": row.get("parent_name") or row.get("object_name"),
+            "picket": None if _isnan(row.get("picket")) else int(row["picket"]),
+            "channel_id": int(row["channel_id"]),
+            "probability": prob, "horizon_hours": 24,
+            "model_version": "m2-pump-v1", "card": card,
+        })
+    return out
+
+
+# ------------------------------------------------------ M3 «пожар»
+
+def score_fire(con, day, limit=20):
+    """Вердикты по задымлению.
+
+    Скор правиловый и это заявлено прямо: обучать классификатор не на чем.
+    Зато подтверждение выражено тритом, и «подтвердить нечем» не подменяется
+    на «всё в порядке» — именно так обстоит дело в 86 % случаев.
+    """
+    from core import fire
+
+    df = con.execute(f"""
+        SELECT * FROM fire_candidate WHERE d = DATE '{day}'
+    """).df()
+    if df.empty:
+        return []
+
+    out = []
+    for _, row in df.iterrows():
+        score, why = fire.score_candidate(row)
+        if score <= 0:
+            continue
+        evidence = [{"feature": "fire", "group": "задымление",
+                     "value": float(row["n_smoke_ch"]), "contribution": score / len(why),
+                     "phrase": w} for w in why]
+        obj = con.execute(
+            f"SELECT any_value(parent_name) p, any_value(object_name) o "
+            f"FROM dim_channel WHERE object_id = {int(row['object_id'])}").fetchone()
+        loc = f"{obj[0] or obj[1]}, ПК{int(row['picket'])}"
+
+        card = explain.build_card(
+            verdict_type="возможное задымление",
+            location=loc, probability=score, bias=0.0, evidence=evidence,
+            negatives=["регламентная проверка: сработала лишь часть датчиков контроллера"]
+                      if not row["is_sweep"] else [],
+            observability=fire.blind_spot_note(row),
+            counterfactual_text=None,
+        )
+        card["sensor_name"] = row["sample_name"]
+        card["sensor_type"] = "Датчик дыма"
+        out.append({
+            "scenario": "пожар",
+            "object_id": int(row["object_id"]),
+            "object_name": obj[0] or obj[1],
+            "picket": int(row["picket"]),
+            "channel_id": None,
+            "probability": float(score), "horizon_hours": 24,
+            "model_version": "m3-fire-v1", "card": card,
+        })
+    out.sort(key=lambda r: -r["probability"])
+    return out[:limit]
