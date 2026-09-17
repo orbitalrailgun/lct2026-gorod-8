@@ -17,6 +17,14 @@ from nicegui import app, ui
 from core import auth, cards, config, db, explain, reports
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
+GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
+
+SCENARIO_HEX = {
+    "отказ": "#f59e0b",
+    "подтопление": "#3b82f6",
+    "пожар": "#ef4444",
+    "проникновение": "#a855f7",
+}
 
 STATE = {"scenario": None, "status": None}
 
@@ -121,6 +129,7 @@ def header():
         with ui.row().classes("items-center gap-3"):
             ui.button("Очередь", on_click=lambda: ui.navigate.to("/")).props("flat dense color=white")
             ui.button("Схема", on_click=lambda: ui.navigate.to("/scheme")).props("flat dense color=white")
+            ui.button("Карта", on_click=lambda: ui.navigate.to("/map")).props("flat dense color=white")
             ui.button("Журнал", on_click=lambda: ui.navigate.to("/journal")).props("flat dense color=white")
             user = current_user()
             if user and auth.rights(user["role"])["can_admin"]:
@@ -615,6 +624,94 @@ def journal_page():
             rows=[{**r, "prob": f"{r['probability']:.0%}"} for r in rows],
             row_key="id",
         ).classes("w-full").props("dense flat")
+
+
+def load_geometry():
+    if not os.path.exists(GEOMETRY):
+        return []
+    with open(GEOMETRY, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+@ui.page("/map")
+def map_page():
+    """Интерактивная карта с выделением проблемных зон — требование ТЗ.
+
+    Геометрия схематическая и это принципиально проговаривается. Реальных
+    координат в данных нет: предприятие использует внутреннюю систему координат,
+    пересчёт которой заказчик вынес за рамки проекта, разрешив сгенерировать
+    линейные объекты самостоятельно. Мы привязали трассы к районам по топонимам,
+    уцелевшим в названиях датчиков, поэтому коллекторы показаны примерно там,
+    где они и проходят, — но это ориентир, а не результат съёмки.
+    """
+    if not require_login():
+        return
+    header()
+
+    geometry = load_geometry()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-3"):
+        with ui.row().classes("w-full items-baseline justify-between"):
+            ui.label("Карта объектов").classes("text-xl font-semibold")
+            ui.label(f"{len(geometry)} объектов").classes("text-sm opacity-60")
+
+        with ui.card().classes("bg-amber-50 w-full p-2"):
+            ui.label(
+                "Геометрия трасс схематическая. Реальные координаты предприятия "
+                "во внутренней системе и в датасет не передавались; расположение "
+                "восстановлено по районам из названий датчиков, длина участка — "
+                "по числу пикетов (1 пикет = 10 м). Для ориентирования этого "
+                "достаточно, для съёмочных задач — нет."
+            ).classes("text-sm")
+
+        if not geometry:
+            ui.label("Геометрия не рассчитана").classes("opacity-60")
+            return
+
+        m = ui.leaflet(center=(55.66, 37.55), zoom=11).classes("w-full h-96")
+
+        for g in geometry:
+            risk = g["max_probability"]
+            color = "#dc2626" if risk >= 0.8 else "#f59e0b" if risk >= 0.5 else "#64748b"
+            m.generic_layer(name="polyline", args=[
+                [list(p) for p in g["line"]],
+                {"color": color, "weight": 6, "opacity": 0.75},
+            ])
+            for p in g["points"]:
+                m.generic_layer(name="circleMarker", args=[
+                    [p["lat"], p["lon"]],
+                    {"radius": 4 + 6 * p["probability"],
+                     "color": SCENARIO_HEX.get(p["scenario"], "#94a3b8"),
+                     "fillColor": SCENARIO_HEX.get(p["scenario"], "#94a3b8"),
+                     "fillOpacity": 0.8, "weight": 1},
+                ])
+
+        with ui.row().classes("gap-4 text-xs opacity-75 flex-wrap"):
+            for label, color in (("отказ датчика", "#f59e0b"),
+                                 ("подтопление", "#3b82f6"),
+                                 ("задымление", "#ef4444"),
+                                 ("проникновение", "#a855f7")):
+                with ui.row().classes("items-center gap-1"):
+                    ui.html(f'<span style="display:inline-block;width:10px;height:10px;'
+                            f'border-radius:50%;background:{color}"></span>')
+                    ui.label(label)
+            ui.label("· толщина трассы и цвет — максимальный риск на объекте")
+
+        ui.label("Проблемные зоны").classes("text-lg font-semibold mt-2")
+        for g in sorted(geometry, key=lambda x: -x["max_probability"]):
+            if g["max_probability"] < 0.5:
+                continue
+            with ui.card().classes("w-full p-2"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.column().classes("gap-0"):
+                        place = f" · район {g['toponym']}" if g.get("toponym") else \
+                                " · район не определён"
+                        ui.label(g["object_name"] + place).classes("font-medium")
+                        ui.label(
+                            f"ПК{g['picket_min']}–ПК{g['picket_max']}, "
+                            f"{g['length_m'] / 1000:.1f} км · {g['n_cards']} вердиктов"
+                        ).classes("text-xs opacity-60")
+                    ui.label(f"{g['max_probability']:.0%}").classes(
+                        f"text-lg font-bold text-{risk_color(g['max_probability'])}-600")
 
 
 # ------------------------------------------------------------- REST API

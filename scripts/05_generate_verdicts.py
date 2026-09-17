@@ -11,9 +11,10 @@
 import json
 import os
 
-from core import cards, config, etl, scoring
+from core import cards, config, etl, geo, scoring
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
+GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
 # Демонстрационные сутки выбраны как единственные в последнем квартале данных,
 # где одновременно присутствуют все три сценария: 12 аномальных насосов и 30 очагов
 # задымления. На случайно взятых сутках подтопление и пожар дают по одному вердикту —
@@ -49,6 +50,16 @@ def main():
 
     multi = cards.group_by_object(verdicts)
     print(f"мультикарточек по объектам: {len(multi)}")
+
+    # Геометрия для карты считается здесь: приложению витрины не нужны.
+    channel_rows = con.execute("""
+        SELECT parent_name, object_name, sensor_name, picket FROM dim_channel
+    """).df().to_dict("records")
+    geometry = geo.build_object_geometry(multi, channel_rows)
+    with open(GEOMETRY, "w", encoding="utf-8") as fh:
+        json.dump(geometry, fh, ensure_ascii=False, indent=1)
+    known = sum(1 for g in geometry if g["anchor_known"])
+    print(f"геометрия: {len(geometry)} объектов, из них с реальным районом {known}")
     inc = [v["card"]["incubation_days"] for v in verdicts
            if v["card"].get("incubation_days") is not None]
     if inc:
