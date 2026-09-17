@@ -1,17 +1,20 @@
 # --- Веб-интерфейс ---
-nicegui==2.* 
+nicegui>=2.0,<3
 
-# --- Данные и аналитика ---
-duckdb==1.*
-pandas==2.*
-numpy==1.*
-pyarrow==18.*
+# --- Данные ---
+duckdb>=1.1
+pandas>=2.0
+numpy>=1.26,<3
+pyarrow>=17
 
 # --- ML ---
-scikit-learn==1.*
+scikit-learn>=1.5
+
+# --- Оперативный контур ---
+psycopg[binary]>=3.2
 
 # --- Отчёты ---
-openpyxl==3.*
+openpyxl>=3.1
 
-# --- Утилиты ---
-python-dateutil==2.*
+# --- Аутентификация ---
+pyotp>=2.9
