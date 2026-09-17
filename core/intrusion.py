@@ -55,6 +55,13 @@ NIGHT_FROM, NIGHT_TO = 0, 5
 # уходить в отказ оборудования, а не в охранную тревогу.
 HUMAN_PLAUSIBLE_MAX = 200
 
+# Верхняя граница длительности эпизода. Проникновение — это минуты, максимум
+# час-другой. Эпизод на двенадцать часов означает либо работу подрядчиков при
+# формально не снятой охране, либо залипший датчик, но не человека внутри.
+# Признак стал виден только после перехода на секундные метки: в посуточном
+# представлении «84 срабатывания» и «84 срабатывания за 12 часов» неразличимы.
+HUMAN_PLAUSIBLE_HOURS = 4
+
 
 def build_armed_intervals(con):
     """Интервалы «объект под охраной», восстановленные из переключений."""
@@ -159,9 +166,34 @@ def build_intrusion_events(con, window_minutes=15):
     return con.execute("SELECT count(*) FROM intrusion_event").fetchone()[0]
 
 
+def episode_hours(row):
+    """Длительность эпизода в часах по секундным меткам."""
+    first, last = row.get("first_t"), row.get("last_t")
+    if first is None or last is None:
+        return None
+    try:
+        return (_seconds(last) - _seconds(first)) / 3600.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _seconds(value):
+    """Секунды от полуночи для time или timedelta из pandas."""
+    if hasattr(value, "total_seconds"):
+        return value.total_seconds()
+    return value.hour * 3600 + value.minute * 60 + value.second
+
+
 def score_intrusion(row):
     """Скор и обоснование. Правила, а не модель — размечать проникновения нечем."""
     score, why = 0.0, []
+
+    hours = episode_hours(row)
+    if hours is not None and hours > HUMAN_PLAUSIBLE_HOURS:
+        return 0.0, [f"эпизод длился {hours:.1f} ч — для присутствия человека "
+                     "это неправдоподобно долго. Картина соответствует работе "
+                     "подрядчиков при не снятой охране либо залипшему датчику, "
+                     "а не проникновению"]
 
     n_types = int(row["n_types"])
     if n_types >= 3:

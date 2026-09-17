@@ -79,6 +79,10 @@ def build_pump_day(con):
         SELECT
             channel_id, d,
             count(*) FILTER (WHERE raw_value = '{ON}' AND prev = '{OFF}')  AS n_starts,
+            -- момент первого и последнего пуска: данные хранят секунды,
+            -- и для вердикта важно, ночью ли началась откачка
+            min(t) FILTER (WHERE raw_value = '{ON}' AND prev = '{OFF}')     AS t_first_start,
+            max(t) FILTER (WHERE raw_value = '{ON}' AND prev = '{OFF}')     AS t_last_start,
             count(*) FILTER (WHERE raw_value = '{OFF}' AND prev = '{ON}')  AS n_stops,
             -- наработка: сколько секунд насос простоял включённым за сутки
             COALESCE(sum(

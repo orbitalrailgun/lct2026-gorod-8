@@ -11,6 +11,8 @@
 
 import pickle
 
+import datetime as dt
+
 import numpy as np
 import pandas as pd
 
@@ -80,6 +82,40 @@ def _location(row, show_toponyms=False):
     if not parts:
         parts.append(f"канал {int(row['channel_id'])}")
     return ", ".join(parts)
+
+
+def _iso_moment(day_value, time_value):
+    """Корректная ISO-метка из даты и времени.
+
+    Дата приходит из pandas как Timestamp, а не date, поэтому прямая подстановка
+    в строку давала «2026-05-06 00:00:00T10:46:30» — невалидную метку, которую
+    интерфейс обрезал до полуночи. Собираем через datetime, а не через текст.
+    """
+    if day_value is None or time_value is None:
+        return None
+    day = pd.Timestamp(day_value).date()
+    if isinstance(time_value, pd.Timedelta):
+        time_value = (dt.datetime.min + time_value).time()
+    elif isinstance(time_value, str):
+        time_value = dt.time.fromisoformat(time_value)
+    return dt.datetime.combine(day, time_value).isoformat()
+
+
+def _episode_span(row):
+    """Продолжительность эпизода словами — если она известна и содержательна."""
+    start = _iso_moment(row.get("d"), row.get("first_t"))
+    end = _iso_moment(row.get("d"), row.get("last_t"))
+    if not start or not end or start == end:
+        return start, None
+    seconds = (dt.datetime.fromisoformat(end) - dt.datetime.fromisoformat(start)).total_seconds()
+    if seconds < 60:
+        span = f"{seconds:.0f} с"
+    elif seconds < 3600:
+        span = f"{seconds / 60:.0f} мин"
+    else:
+        span = f"{seconds / 3600:.1f} ч"
+    return start, (f"эпизод длился {span}: "
+                   f"с {start[11:19]} до {end[11:19]}")
 
 
 def _isnan(v):
@@ -166,9 +202,11 @@ def score_pumps(con, day, limit=50):
     from core import pumps
 
     df = con.execute(f"""
-        SELECT a.*, c.sensor_name, c.picket, c.object_id, c.object_name,
+        SELECT a.*, p.t_first_start, p.t_last_start,
+               c.sensor_name, c.picket, c.object_id, c.object_name,
                c.parent_name, n.n_hot, n.is_network_event
         FROM pump_anomaly a
+        JOIN pump_day p ON p.channel_id = a.channel_id AND p.d = a.d
         JOIN dim_channel c ON c.channel_id = a.channel_id
         JOIN pump_network n ON n.d = a.d
         WHERE a.d = DATE '{day}' AND a.trit = 1
@@ -178,23 +216,32 @@ def score_pumps(con, day, limit=50):
 
     out = []
     for _, row in df.iterrows():
+        first_start = _iso_moment(row.get("d"), row.get("t_first_start"))
+        last_start = _iso_moment(row.get("d"), row.get("t_last_start"))
         evidence = [{
             "feature": "pump_starts",
             "group": "откачка",
             "value": float(row["n_starts"]),
             "contribution": 0.5,
+            "since": first_start,
             "phrase": pumps.verdict_phrase(row["n_starts"], row["med_starts"],
                                            row["sensor_name"], row["picket"]),
         }]
+        if first_start and last_start and first_start != last_start:
+            evidence.append({
+                "feature": "pump_window", "group": "откачка",
+                "value": 0.0, "contribution": 0.0, "since": first_start,
+                "phrase": (f"откачка шла с {first_start[11:19]} до {last_start[11:19]}"),
+            })
         if row["ratio_to_norm"] and row["ratio_to_norm"] >= 1.5:
             evidence.append({
-                "feature": "ratio", "group": "откачка",
+                "feature": "ratio", "group": "откачка", "since": first_start,
                 "value": float(row["ratio_to_norm"]), "contribution": 0.3,
                 "phrase": f"это в {row['ratio_to_norm']:.0f} раз выше личной нормы насоса",
             })
         if row["duty_seconds"] and row["duty_seconds"] > 0:
             evidence.append({
-                "feature": "duty", "group": "откачка",
+                "feature": "duty", "group": "откачка", "since": first_start,
                 "value": float(row["duty_seconds"]), "contribution": 0.2,
                 "phrase": f"наработка за сутки {row['duty_seconds'] / 60:.0f} минут",
             })
@@ -224,6 +271,7 @@ def score_pumps(con, day, limit=50):
         )
         card["sensor_name"] = row["sensor_name"]
         card["sensor_type"] = "Состояние насоса"
+        card["episode_at"] = first_start
         out.append({
             "scenario": "подтопление",
             "object_id": None if _isnan(row.get("object_id")) else int(row["object_id"]),
@@ -277,7 +325,12 @@ def score_fire(con, day, limit=20):
         )
         card["sensor_name"] = row["sample_name"]
         card["sensor_type"] = "Датчик дыма"
-        card["episode_at"] = f"{row['d']}T{row['first_t']}"
+        start, span = _episode_span(row)
+        card["episode_at"] = start
+        if span:
+            evidence.append({"feature": "episode_span", "group": "задымление",
+                             "value": 0.0, "contribution": 0.0, "phrase": span,
+                             "since": start})
         out.append({
             "scenario": "пожар",
             "object_id": int(row["object_id"]),
@@ -328,7 +381,12 @@ def score_intrusion_day(con, day, limit=20):
         )
         card["sensor_name"] = row["sample_name"]
         card["sensor_type"] = "Охранный контур"
-        card["episode_at"] = f"{row['d']}T{row['first_t']}"
+        start, span = _episode_span(row)
+        card["episode_at"] = start
+        if span:
+            evidence.append({"feature": "episode_span", "group": "охрана",
+                             "value": 0.0, "contribution": 0.0, "phrase": span,
+                             "since": start})
         out.append({
             "scenario": "проникновение",
             "object_id": int(row["object_id"]),

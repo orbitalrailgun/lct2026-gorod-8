@@ -28,7 +28,7 @@ def main():
         etl.load_mart(con, m)
     models = scoring.load_model()
 
-    for m in ("pump_anomaly", "pump_network", "fire_candidate",
+    for m in ("pump_anomaly", "pump_network", "pump_day", "fire_candidate",
               "intrusion_event", "fact_channel_day"):
         etl.load_mart(con, m)
 
