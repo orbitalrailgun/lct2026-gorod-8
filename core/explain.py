@@ -16,7 +16,7 @@
 import numpy as np
 
 from core import trits
-from core.features import FEATURES, FEATURE_NAMES, describe
+from core.features import FEATURES, FEATURE_NAMES, describe, is_supported
 
 
 def tree_contributions(tree, x):
@@ -74,10 +74,15 @@ def top_evidence(forest, x, values, baselines=None, k=4):
     bias, contrib = forest_contributions(forest, x)
     order = np.argsort(-contrib)
     out = []
-    for idx in order[:k]:
+    for idx in order:
+        if len(out) >= k:
+            break
         name = FEATURE_NAMES[idx]
         if contrib[idx] <= 0:
             break
+        # улика без абсолютной опоры вводит в заблуждение — пропускаем
+        if not is_supported(name, values):
+            continue
         spec = FEATURES[name]
         base = (baselines or {}).get(name)
         value = values[name]

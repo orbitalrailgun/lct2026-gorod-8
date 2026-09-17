@@ -14,7 +14,7 @@ import os
 
 from nicegui import app, ui
 
-from core import config, db, explain
+from core import cards, config, db, explain
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 
@@ -98,9 +98,12 @@ def verdict_card(v):
     with ui.card().classes(f"w-full {border}"):
         with ui.row().classes("w-full items-center justify-between"):
             with ui.column().classes("gap-0"):
-                ui.label(card["location"]).classes("text-base font-semibold")
-                ui.label(f"{card.get('sensor_name') or ''} · {card.get('sensor_type') or ''}") \
-                    .classes("text-xs opacity-60")
+                ui.label(card.get("title") or card["location"]).classes("text-base font-semibold")
+                sub = f"{card.get('sensor_name') or ''} · {card.get('sensor_type') or ''}"
+                inc = cards.incubation_phrase(card.get("incubation_days"))
+                ui.label(sub).classes("text-xs opacity-60")
+                if inc:
+                    ui.label(inc).classes("text-xs opacity-70 italic")
             with ui.row().classes("items-center gap-2"):
                 ui.badge(v["scenario"], color=SCENARIO_COLORS.get(v["scenario"], "grey"))
                 ui.label(f"{v['probability']:.0%}").classes(
@@ -132,6 +135,14 @@ def verdict_card(v):
 
         if card.get("counterfactual"):
             ui.label(card["counterfactual"]).classes("text-sm italic opacity-80")
+
+        if card.get("timeline"):
+            with ui.expansion("Хронология", icon="schedule").classes("w-full"):
+                for e in card["timeline"]:
+                    with ui.row().classes("w-full items-baseline gap-3"):
+                        ui.label(e["ts"][:10]).classes("text-xs font-mono opacity-60 w-24")
+                        ui.badge(e["kind"]).props("outline")
+                        ui.label(e["text"]).classes("text-sm")
 
         if card.get("recommendation"):
             with ui.card().classes("bg-emerald-50 w-full p-2"):
@@ -198,10 +209,12 @@ def decision_dialog(verdict_id):
 
 @ui.refreshable
 def feed():
-    rows, live = load_verdicts()
+    rows, live = load_verdicts(400)
     if not rows:
         ui.label("Вердиктов нет").classes("opacity-60")
         return
+
+    multicards = cards.group_by_object(rows)
 
     total = len(rows)
     high = sum(1 for r in rows if r["probability"] >= 0.8)
@@ -210,21 +223,61 @@ def feed():
 
     with ui.row().classes("w-full gap-4"):
         for title, value, color in (
-            ("В очереди", total, "slate"),
+            ("Объектов в очереди", len(multicards), "slate"),
+            ("Вердиктов", total, "slate"),
             ("Высокий риск", high, "red"),
             ("Не отработано", new, "orange"),
-            ("С ограниченной наблюдаемостью", blind, "amber"),
+            ("Ограниченная наблюдаемость", blind, "amber"),
         ):
             with ui.card().classes("flex-1"):
-                ui.label(str(value)).classes(f"text-3xl font-bold text-{color}-600")
+                ui.label(str(value)).classes(f"text-2xl font-bold text-{color}-600")
                 ui.label(title).classes("text-xs opacity-70")
 
     if not live:
-        ui.label("Источник: seed-файл (PostgreSQL недоступен)") \
-            .classes("text-xs opacity-50")
+        ui.label("Источник: seed-файл (PostgreSQL недоступен)").classes("text-xs opacity-50")
 
-    for v in rows[:50]:
-        verdict_card(v)
+    for m in multicards:
+        multicard(m)
+
+
+def multicard(m):
+    """Мультикарточка объекта: одна поездка бригады — одна сущность."""
+    risk = m["max_probability"]
+    with ui.card().classes(f"w-full border-l-4 border-{risk_color(risk)}-500"):
+        with ui.row().classes("w-full items-center justify-between"):
+            with ui.column().classes("gap-0 flex-1"):
+                ui.label(m["object_name"]).classes("text-lg font-semibold")
+                ui.label(m["summary"]).classes("text-sm opacity-75")
+            with ui.column().classes("items-end gap-0"):
+                ui.label(f"{risk:.0%}").classes(
+                    f"text-2xl font-bold text-{risk_color(risk)}-600")
+                ui.label(f"{m['n_cards']} вердиктов").classes("text-xs opacity-60")
+
+        with ui.row().classes("gap-2 items-center"):
+            for scenario, count in m["scenarios"].items():
+                ui.badge(f"{scenario}: {count}",
+                         color=SCENARIO_COLORS.get(scenario, "grey"))
+            if m.get("first_sign_at"):
+                ui.label(f"первые признаки {m['first_sign_at'][:10]}").classes(
+                    "text-xs opacity-60")
+
+        note = cards.blind_spot_summary(m["cards"])
+        if note:
+            with ui.card().classes("bg-amber-50 w-full p-2"):
+                ui.label(note).classes("text-sm")
+
+        with ui.expansion(f"Общая хронология объекта ({len(m['timeline'])} записей)",
+                          icon="timeline").classes("w-full"):
+            for e in m["timeline"]:
+                with ui.row().classes("w-full items-baseline gap-3"):
+                    ui.label(e["ts"][:10]).classes("text-xs font-mono opacity-60 w-24")
+                    ui.badge(e["kind"]).props("outline")
+                    ui.label(e["text"]).classes("text-sm")
+
+        with ui.expansion(f"Вердикты объекта ({m['n_cards']})",
+                          icon="list").classes("w-full"):
+            for v in m["cards"]:
+                verdict_card(v)
 
 
 @ui.page("/")

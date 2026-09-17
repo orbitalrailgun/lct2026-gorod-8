@@ -11,7 +11,7 @@
 import json
 import os
 
-from core import config, etl, scoring
+from core import cards, config, etl, scoring
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 # Демонстрационные сутки выбраны как единственные в последнем квартале данных,
@@ -41,7 +41,19 @@ def main():
     print(f"M4 проникновение: {len(intr_v):>2}")
     verdicts = verdicts + pumps_v + fire_v + intr_v
     verdicts.sort(key=lambda r: -r["probability"])
+
+    # заголовок, метки появления признаков, таймлайн
+    for v in verdicts:
+        cards.enrich_card(con, v, LAST_DAY)
     print(f"всего на {LAST_DAY}: {len(verdicts)}")
+
+    multi = cards.group_by_object(verdicts)
+    print(f"мультикарточек по объектам: {len(multi)}")
+    inc = [v["card"]["incubation_days"] for v in verdicts
+           if v["card"].get("incubation_days") is not None]
+    if inc:
+        print(f"вызревание признаков: медиана {sorted(inc)[len(inc)//2]} сут, "
+              f"максимум {max(inc)} сут")
 
     os.makedirs(os.path.dirname(SEED), exist_ok=True)
     with open(SEED, "w", encoding="utf-8") as fh:

@@ -186,7 +186,7 @@ def score_pumps(con, day, limit=50):
             "phrase": pumps.verdict_phrase(row["n_starts"], row["med_starts"],
                                            row["sensor_name"], row["picket"]),
         }]
-        if row["ratio_to_norm"] and row["ratio_to_norm"] > 1:
+        if row["ratio_to_norm"] and row["ratio_to_norm"] >= 1.5:
             evidence.append({
                 "feature": "ratio", "group": "откачка",
                 "value": float(row["ratio_to_norm"]), "contribution": 0.3,
@@ -277,6 +277,7 @@ def score_fire(con, day, limit=20):
         )
         card["sensor_name"] = row["sample_name"]
         card["sensor_type"] = "Датчик дыма"
+        card["episode_at"] = f"{row['d']}T{row['first_t']}"
         out.append({
             "scenario": "пожар",
             "object_id": int(row["object_id"]),
@@ -327,6 +328,7 @@ def score_intrusion_day(con, day, limit=20):
         )
         card["sensor_name"] = row["sample_name"]
         card["sensor_type"] = "Охранный контур"
+        card["episode_at"] = f"{row['d']}T{row['first_t']}"
         out.append({
             "scenario": "проникновение",
             "object_id": int(row["object_id"]),

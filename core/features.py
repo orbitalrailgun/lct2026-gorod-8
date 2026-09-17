@@ -101,6 +101,30 @@ FEATURES = {
 
 FEATURE_NAMES = list(FEATURES)
 
+# Минимальная абсолютная опора для относительных признаков.
+# Кратность, посчитанная от одного события, формально верна и практически
+# бессмысленна: «неисправностей в 12,9 раза больше нормы» рядом с «сообщений
+# за 7 суток: 1» выглядит как ошибка системы и подрывает доверие к остальным
+# уликам. Такая улика в карточку не попадает, хотя в модели признак остаётся.
+MIN_SUPPORT = {
+    "fault_ratio_90d": ("fault_ev_7d", 3),
+    "ev_ratio_7d": ("ev_7d", 5),
+    "silence_ratio": ("silence_days", 2),
+    "undefined_share_7d": ("undefined_ev_7d", 3),
+}
+
+
+def is_supported(name, values):
+    """Есть ли у относительной улики достаточная абсолютная опора."""
+    rule = MIN_SUPPORT.get(name)
+    if rule is None:
+        return True
+    source, floor = rule
+    try:
+        return float(values.get(source, 0)) >= floor
+    except (TypeError, ValueError):
+        return True
+
 
 SPECIAL = {
     # «0 суток назад» звучит как ошибка, хотя означает самое тревожное — сегодня

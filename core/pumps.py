@@ -48,6 +48,11 @@ Z_THRESHOLD = 3.0
 MIN_ABS_STARTS = 10
 MIN_ABS_EXCESS = 5
 
+# Относительный порог. Без него насос с личной нормой 130 пусков в сутки
+# попадает в аномалии при 179 — формально превышение есть, по существу это
+# его обычный режим. Аномалия должна быть заметна и в абсолюте, и в кратности.
+MIN_RATIO = 1.5
+
 # Сутки считаются общесетевыми, если столько каналов разом превысили свою норму.
 # За 8 лет таких суток 68, из них 38 в марте и 15 в апреле — подпись паводка.
 NETWORK_HOT_MIN = 10
@@ -153,6 +158,7 @@ def build_pump_anomaly(con, z_threshold=Z_THRESHOLD):
                 -- относительно нормы, но и сама по себе
                 WHEN n_starts < {MIN_ABS_STARTS}
                      OR n_starts - COALESCE(med_starts, 0) < {MIN_ABS_EXCESS}
+                     OR n_starts < COALESCE(med_starts, 0) * {MIN_RATIO}
                      THEN {NORMAL}
                 WHEN mad_starts IS NULL OR mad_starts = 0 THEN
                      CASE WHEN n_starts > p95_starts THEN {DEVIATION} ELSE {NORMAL} END
