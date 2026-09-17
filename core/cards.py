@@ -189,6 +189,7 @@ def build_multicard(object_name, items):
         "pickets": pickets,
         "summary": build_summary(object_name, scenarios, pickets, items),
         "first_sign_at": min(firsts) if firsts else None,
+        "cascades": detect_cascades(items),
         "timeline": merged,
         "cards": items,
     }
@@ -224,6 +225,65 @@ def merge_timeline(items):
         merged.append(bucket)
     merged.sort(key=lambda x: x["ts"])
     return merged
+
+
+def detect_cascades(items, window_seconds=120, min_points=4, min_pickets=2):
+    """Каскадные отказы: признаки, возникшие практически одновременно.
+
+    Заказчик описал физику прямо: информационно-питающая линия 48 В кормит
+    десятки датчиков, и её повреждение роняет их разом. Посуточная агрегация
+    это скрывала — в данных отказы стоят с точностью до секунды, и каналы
+    одного луча гаснут в пределах двух-трёх секунд.
+
+    Различие принципиальное для бригады: десять независимых отказов требуют
+    десяти проверок, один каскад — одной, на питающей линии.
+    """
+    stamps = []
+    for v in items:
+        loc = v.get("picket")
+        for entry in v["card"].get("timeline", []):
+            ts = entry.get("ts")
+            if not ts or len(str(ts)) <= 10:
+                continue          # суточная метка — момент неизвестен
+            try:
+                moment = dt.datetime.fromisoformat(str(ts))
+            except ValueError:
+                continue
+            stamps.append((moment, loc))
+
+    stamps.sort(key=lambda x: x[0])
+    cascades, current = [], []
+    for moment, loc in stamps:
+        if current and (moment - current[0][0]).total_seconds() > window_seconds:
+            if len(current) >= min_points:
+                cascades.append(current)
+            current = []
+        current.append((moment, loc))
+    if len(current) >= min_points:
+        cascades.append(current)
+
+    out = []
+    for group in cascades:
+        pickets = sorted({loc for _, loc in group if loc is not None})
+        # Каскад по линии обязан затрагивать несколько точек. Совпадение
+        # нескольких признаков в одной точке — это один прибор, а не луч,
+        # и называть его каскадом значило бы отправить бригаду не туда.
+        if len(pickets) < min_pickets:
+            continue
+        span = (group[-1][0] - group[0][0]).total_seconds()
+        out.append({
+            "at": group[0][0].isoformat(),
+            "n_signs": len(group),
+            "span_seconds": span,
+            "pickets": pickets,
+            "text": (f"{len(group)} признаков на {len(pickets)} точках возникли "
+                     f"за {span:.0f} с ({group[0][0]:%d.%m %H:%M:%S}), "
+                     f"отрезок ПК{pickets[0]}–ПК{pickets[-1]} "
+                     f"({(pickets[-1] - pickets[0]) * 10} м). "
+                     "Похоже на каскад по питающей линии, а не на независимые отказы"),
+        })
+    out.sort(key=lambda c: -c["n_signs"])
+    return out
 
 
 def build_summary(object_name, scenarios, pickets, items):

@@ -27,12 +27,27 @@ KIND_ACK = "квитирование"
 KIND_DECISION = "решение"
 
 
-def _first_day_where(series, predicate):
-    """Первые сутки в окне, где условие выполнено. Серия отсортирована по дате."""
+def _first_row_where(series, predicate):
+    """Первая запись в окне, удовлетворяющая условию."""
     for row in series:
         if predicate(row):
-            return row["d"]
+            return row
     return None
+
+
+def _stamp(row, time_key, fallback_key="t_first"):
+    """Дата-время признака: точный момент, если он известен, иначе сутки.
+
+    Данные хранят время с точностью до секунды, и для части признаков момент
+    известен точно. Там, где он не определён, метка остаётся суточной —
+    подменять её серединой суток было бы вымыслом.
+    """
+    if row is None:
+        return None
+    t = row.get(time_key) or row.get(fallback_key)
+    if t is None:
+        return row["d"]
+    return dt.datetime.combine(row["d"], t)
 
 
 def sign_since(feature, series, day):
@@ -48,16 +63,16 @@ def sign_since(feature, series, day):
     window30 = [r for r in series if (day - r["d"]).days < 30]
 
     if feature in ("fault_ev_7d", "fault_ratio_90d", "dev_days_7d"):
-        return _first_day_where(window7, lambda r: r["n_fault"] > 0)
+        return _stamp(_first_row_where(window7, lambda r: r["n_fault"] > 0), "t_first_fault")
 
     if feature == "fault_days_30d":
-        return _first_day_where(window30, lambda r: r["n_fault"] > 0)
+        return _stamp(_first_row_where(window30, lambda r: r["n_fault"] > 0), "t_first_fault")
 
     if feature == "days_since_fault":
         # обратный порядок: нужна последняя неисправность, а не первая
         for row in reversed(series):
             if row["n_fault"] > 0:
-                return row["d"]
+                return _stamp(row, "t_last_fault", "t_last")
         return None
 
     if feature in ("silence_days", "silence_ratio", "unknown_days_7d"):
@@ -66,31 +81,37 @@ def sign_since(feature, series, day):
         # не должна уезжать в будущее — это выглядело бы как сбой системы.
         for row in reversed(series):
             if row["was_active"]:
-                nxt = row["d"] + dt.timedelta(days=1)
-                return min(nxt, day)
+                # Молчание отсчитывается от последнего события, а не от следующих
+                # суток: так метка указывает точный момент, после которого канал замолк.
+                return _stamp(row, "t_last")
         return series[0]["d"] if series else None
 
     if feature in ("undefined_ev_7d", "undefined_share_7d"):
-        return _first_day_where(window7, lambda r: r["n_undefined"] > 0)
+        return _stamp(_first_row_where(window7, lambda r: r["n_undefined"] > 0),
+                      "t_first_undefined")
 
     if feature in ("ev_7d", "ev_ratio_7d", "active_days_7d"):
-        return _first_day_where(window7, lambda r: r["n_ev"] > 0)
+        return _stamp(_first_row_where(window7, lambda r: r["n_ev"] > 0), "t_first")
 
     # признаки окружения: момент, когда в окне вообще появилась активность
-    return _first_day_where(window7, lambda r: r["n_ev"] > 0 or r["n_fault"] > 0)
+    return _stamp(_first_row_where(window7, lambda r: r["n_ev"] > 0 or r["n_fault"] > 0),
+                  "t_first")
 
 
 def load_channel_series(con, channel_id, day, days=90):
     """Суточная серия канала для расчёта меток. Один запрос на карточку."""
     rows = con.execute(f"""
-        SELECT d, n_ev, n_fault + n_disabled AS n_fault, n_undefined, TRUE AS was_active
+        SELECT d, n_ev, n_fault + n_disabled AS n_fault, n_undefined,
+               t_first, t_last, t_first_fault, t_last_fault, t_first_undefined
         FROM fact_channel_day
         WHERE channel_id = {channel_id}
           AND d BETWEEN DATE '{day}' - {days} AND DATE '{day}'
         ORDER BY d
     """).fetchall()
-    return [{"d": r[0], "n_ev": r[1], "n_fault": r[2],
-             "n_undefined": r[3], "was_active": True} for r in rows]
+    return [{"d": r[0], "n_ev": r[1], "n_fault": r[2], "n_undefined": r[3],
+             "was_active": True, "t_first": r[4], "t_last": r[5],
+             "t_first_fault": r[6], "t_last_fault": r[7],
+             "t_first_undefined": r[8]} for r in rows]
 
 
 def enrich_evidence(evidence, series, day):
@@ -156,4 +177,4 @@ def incubation_days(evidence, day):
         return None
     if isinstance(day, str):
         day = dt.date.fromisoformat(day)
-    return (day - dt.date.fromisoformat(first[:10])).days
+    return (day - dt.date.fromisoformat(str(first)[:10])).days

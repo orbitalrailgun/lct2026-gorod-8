@@ -169,7 +169,15 @@ def build_fact_channel_day(con):
             min(num_ok) AS num_min,
             max(num_ok) AS num_max,
             count(num_ok) AS n_num_ok,
-            min(t) AS t_first, max(t) AS t_last
+            min(t) AS t_first, max(t) AS t_last,
+            -- Метки по классам: данные хранят время с точностью до секунды,
+            -- поэтому вердикт может назвать не только сутки, но и момент.
+            -- Разница между «признаки появились сегодня» и «сегодня в 03:12»
+            -- для диспетчера существенна: ночное развитие читается иначе.
+            min(t) FILTER (WHERE cls IN ('{contract.FAULT}', '{contract.DISABLED}')) AS t_first_fault,
+            max(t) FILTER (WHERE cls IN ('{contract.FAULT}', '{contract.DISABLED}')) AS t_last_fault,
+            min(t) FILTER (WHERE cls = '{contract.TRIGGER}')   AS t_first_trigger,
+            min(t) FILTER (WHERE cls = '{contract.UNDEFINED}') AS t_first_undefined
         FROM tr
         GROUP BY channel_id, d
     """)

@@ -115,6 +115,14 @@ def load_verdicts(limit=200):
     return [], False
 
 
+def fmt_ts(ts):
+    """Метка времени: с точностью до секунды там, где момент известен."""
+    text = str(ts or "")
+    if len(text) > 10:
+        return text[:19].replace("T", " ")
+    return text
+
+
 def risk_color(p):
     return "red" if p >= 0.8 else "orange" if p >= 0.5 else "grey"
 
@@ -204,7 +212,7 @@ def verdict_card(v):
             with ui.expansion("Хронология", icon="schedule").classes("w-full"):
                 for e in card["timeline"]:
                     with ui.row().classes("w-full items-baseline gap-3"):
-                        ui.label(e["ts"][:10]).classes("text-xs font-mono opacity-60 w-24")
+                        ui.label(fmt_ts(e["ts"])).classes("text-xs font-mono opacity-60 w-36")
                         ui.badge(e["kind"]).props("outline")
                         ui.label(e["text"]).classes("text-sm")
 
@@ -325,6 +333,14 @@ def multicard(m):
             if m.get("first_sign_at"):
                 ui.label(f"первые признаки {m['first_sign_at'][:10]}").classes(
                     "text-xs opacity-60")
+
+        for casc in (m.get("cascades") or [])[:2]:
+            with ui.card().classes("bg-rose-50 w-full p-2"):
+                with ui.row().classes("items-start gap-2"):
+                    ui.icon("bolt").classes("text-rose-700 mt-1")
+                    with ui.column().classes("gap-0"):
+                        ui.label("Каскад").classes("text-xs font-semibold opacity-70")
+                        ui.label(casc["text"]).classes("text-sm")
 
         note = cards.blind_spot_summary(m["cards"])
         if note:
