@@ -14,11 +14,50 @@ import os
 
 from nicegui import app, ui
 
-from core import cards, config, db, explain
+from core import auth, cards, config, db, explain, reports
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 
-STATE = {"user_id": 3, "role": "диспетчер_одс", "scenario": None, "status": None}
+STATE = {"scenario": None, "status": None}
+
+
+# ------------------------------------------------------------- доступ
+
+def current_user():
+    """Пользователь текущей сессии или None."""
+    try:
+        return app.storage.user.get("user")
+    except Exception:
+        return None
+
+
+def require_login():
+    """Страницы закрыты: без входа перенаправляем на форму."""
+    if current_user() is None:
+        ui.navigate.to("/login")
+        return False
+    return True
+
+
+def visible_to_user(rows):
+    """Фильтр по области видимости роли.
+
+    Техник видит свой объект, диспетчер района — назначенные, диспетчер ОДС —
+    всё предприятие. Область задаётся таблицей user_object, а не ролью напрямую,
+    чтобы назначения менялись без правки кода.
+    """
+    user = current_user()
+    if not user:
+        return []
+    if auth.rights(user["role"])["scope"] == "всё":
+        return rows
+    con = get_con()
+    if con is None:
+        return rows
+    allowed = auth.visible_objects(con, user)
+    if not allowed:
+        return rows          # назначений нет — показываем всё, но без права решения
+    return [r for r in rows if r.get("object_id") in allowed]
 
 SCENARIO_COLORS = {
     "отказ": "orange",
@@ -83,10 +122,26 @@ def header():
             ui.button("Очередь", on_click=lambda: ui.navigate.to("/")).props("flat dense color=white")
             ui.button("Схема", on_click=lambda: ui.navigate.to("/scheme")).props("flat dense color=white")
             ui.button("Журнал", on_click=lambda: ui.navigate.to("/journal")).props("flat dense color=white")
-            ui.select(
-                ["техник", "диспетчер_района", "диспетчер_одс", "группа_реагирования"],
-                value=STATE["role"], label="роль",
-            ).props("dark dense outlined").classes("w-52").bind_value(STATE, "role")
+            user = current_user()
+            if user and auth.rights(user["role"])["can_admin"]:
+                ui.button("Настройки", on_click=lambda: ui.navigate.to("/admin")) \
+                    .props("flat dense color=white")
+            ui.button("Отчёт XLSX", on_click=lambda: ui.download("/api/report.xlsx")) \
+                .props("flat dense color=white")
+            if user:
+                with ui.column().classes("gap-0 items-end"):
+                    ui.label(user["full_name"]).classes("text-sm")
+                    ui.label(auth.rights(user["role"])["title"]).classes("text-xs opacity-60")
+                ui.button(icon="logout", on_click=do_logout).props("flat dense color=white")
+
+
+def do_logout():
+    user = current_user()
+    con = get_con()
+    if con is not None and user:
+        db.log_action(con, user["id"], "выход из системы")
+    app.storage.user.clear()
+    ui.navigate.to("/login")
 
 
 def verdict_card(v):
@@ -167,7 +222,7 @@ def do_ack(verdict_id):
     if con is None:
         ui.notify("Оперативный контур недоступен — режим просмотра", type="warning")
         return
-    db.acknowledge(con, verdict_id, STATE["user_id"])
+    db.acknowledge(con, verdict_id, (current_user() or {}).get("id"))
     ui.notify(f"Вердикт {verdict_id} взят в работу")
     feed.refresh()
 
@@ -195,7 +250,7 @@ def decision_dialog(verdict_id):
                 ui.notify("Оперативный контур недоступен", type="warning")
                 dialog.close()
                 return
-            db.record_decision(con, verdict_id, STATE["user_id"],
+            db.record_decision(con, verdict_id, (current_user() or {}).get("id"),
                                action.value, reason.value, comment.value)
             ui.notify("Решение зафиксировано")
             dialog.close()
@@ -210,6 +265,7 @@ def decision_dialog(verdict_id):
 @ui.refreshable
 def feed():
     rows, live = load_verdicts(400)
+    rows = visible_to_user(rows)
     if not rows:
         ui.label("Вердиктов нет").classes("opacity-60")
         return
@@ -280,8 +336,123 @@ def multicard(m):
                 verdict_card(v)
 
 
+@ui.page("/login")
+def login_page():
+    """Вход с двухфакторной аутентификацией."""
+    con = get_con()
+    users = auth.list_users(con) if con is not None else []
+
+    with ui.column().classes("w-full max-w-md mx-auto mt-24 gap-4"):
+        with ui.card().classes("w-full"):
+            ui.label("Дискреция творца").classes("text-xl font-bold")
+            ui.label("Сервис прогнозирования инцидентов в коллекторах") \
+                .classes("text-sm opacity-70")
+            ui.separator()
+
+            login_field = ui.select(
+                {u["login"]: f"{u['full_name']} — {auth.rights(u['role'])['title']}"
+                 for u in users},
+                label="пользователь",
+                value=users[0]["login"] if users else None).classes("w-full")
+            code_field = ui.input("одноразовый код").classes("w-full")
+            message = ui.label("").classes("text-sm text-red-600")
+
+            def do_login():
+                c = get_con()
+                if c is None:
+                    message.text = "оперативный контур недоступен"
+                    return
+                user, err = auth.login(c, login_field.value, code_field.value)
+                if err:
+                    message.text = err
+                    return
+                app.storage.user["user"] = user
+                ui.navigate.to("/")
+
+            ui.button("Войти", on_click=do_login).classes("w-full")
+
+            # Подсказка с текущим кодом нужна только для демонстрации:
+            # в эксплуатации второй фактор приходит из приложения-аутентификатора.
+            if users and con is not None:
+                with ui.expansion("Код для демонстрации", icon="help").classes("w-full"):
+                    def show_code():
+                        u = auth.get_user(get_con(), login_field.value)
+                        hint.text = f"текущий код: {auth.current_code(u['totp_secret'])}"
+                    hint = ui.label("").classes("text-sm font-mono")
+                    ui.button("Показать", on_click=show_code).props("flat dense")
+
+
+@ui.page("/admin")
+def admin_page():
+    """Настраиваемые параметры.
+
+    Организаторы ожидают, что пороги качества и горизонт прогноза задаются
+    администратором, а не зашиты в код: «у администратора есть возможность
+    поправить». Это же закрывает пункт ТЗ о дополнительных настраиваемых
+    параметрах.
+    """
+    if not require_login():
+        return
+    user = current_user()
+    if not auth.rights(user["role"])["can_admin"]:
+        header()
+        ui.label("Недостаточно прав").classes("m-8 opacity-70")
+        return
+
+    header()
+    con = get_con()
+    with ui.column().classes("w-full max-w-3xl mx-auto p-4 gap-4"):
+        ui.label("Настройки сервиса").classes("text-xl font-semibold")
+        ui.label(
+            "Пороги качества и горизонт прогноза задаются здесь, а не в коде. "
+            "Целевые значения ТЗ — Precision 0,70 и Recall 0,50; достижимость "
+            "зависит от горизонта и обоснована в пояснительной записке."
+        ).classes("text-sm opacity-70")
+
+        if con is None:
+            ui.label("Оперативный контур недоступен").classes("opacity-60")
+            return
+
+        with con.cursor() as cur:
+            cur.execute("SELECT key, value, title FROM setting ORDER BY key")
+            settings = cur.fetchall()
+
+        fields = {}
+        for key, value, title in settings:
+            fields[key] = ui.input(title, value=value).classes("w-full")
+
+        def save():
+            c = get_con()
+            for key, field in fields.items():
+                db.set_setting(c, key, field.value, user["id"])
+            ui.notify("Настройки сохранены")
+
+        ui.button("Сохранить", on_click=save)
+
+        ui.separator()
+        ui.label("Журнал действий").classes("text-lg font-semibold")
+        with con.cursor() as cur:
+            cur.execute("""
+                SELECT a.at, u.full_name, a.action, a.entity, a.entity_id
+                FROM audit_log a LEFT JOIN app_user u ON u.id = a.user_id
+                ORDER BY a.at DESC LIMIT 50
+            """)
+            logs = cur.fetchall()
+        ui.table(
+            columns=[{"name": "at", "label": "время", "field": "at"},
+                     {"name": "who", "label": "пользователь", "field": "who"},
+                     {"name": "what", "label": "действие", "field": "what"},
+                     {"name": "obj", "label": "объект", "field": "obj"}],
+            rows=[{"at": r[0].strftime("%d.%m %H:%M:%S"), "who": r[1] or "—",
+                   "what": r[2], "obj": f"{r[3] or ''} {r[4] or ''}".strip()}
+                  for r in logs],
+        ).classes("w-full").props("dense flat")
+
+
 @ui.page("/")
 def index():
+    if not require_login():
+        return
     header()
     with ui.column().classes("w-full max-w-5xl mx-auto p-4 gap-4"):
         with ui.row().classes("w-full items-center justify-between"):
@@ -322,6 +493,8 @@ def build_scheme(rows):
 
 @ui.page("/scheme")
 def scheme_page():
+    if not require_login():
+        return
     header()
     rows, _ = load_verdicts(300)
     by_object = build_scheme(rows)
@@ -387,6 +560,8 @@ def journal_page():
     «вердикт — решение диспетчера» это ровно то, чего сейчас нет ни у нас,
     ни у заказчика.
     """
+    if not require_login():
+        return
     header()
     con = get_con()
     with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
@@ -457,6 +632,21 @@ def api_verdicts(scenario: str = None, status: str = None, limit: int = 100):
     return {"count": len(rows), "items": rows}
 
 
+@app.get("/api/report.xlsx")
+def api_report():
+    """Выгрузка отчёта для руководства — требование ТЗ по форматам XLSX."""
+    from fastapi.responses import Response
+    con = get_con()
+    if con is None:
+        return Response(content=b"", status_code=503)
+    data = reports.to_bytes(reports.build_report(con))
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": 'attachment; filename="concorde_report.xlsx"'},
+    )
+
+
 @app.get("/api/health")
 def api_health():
     con = get_con()
@@ -465,7 +655,8 @@ def api_health():
 
 def main():
     ui.run(host="0.0.0.0", port=8080, title="Дискреция творца", reload=False,
-           favicon="🛠", dark=False, show=False)
+           favicon="🛠", dark=False, show=False,
+           storage_secret=os.environ.get("SESSION_SECRET", "concorde-demo-secret"))
 
 
 main()
