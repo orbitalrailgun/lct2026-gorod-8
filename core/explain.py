@@ -16,7 +16,7 @@
 import numpy as np
 
 from core import trits
-from core.features import FEATURES, FEATURE_NAMES
+from core.features import FEATURES, FEATURE_NAMES, describe
 
 
 def tree_contributions(tree, x):
@@ -86,7 +86,7 @@ def top_evidence(forest, x, values, baselines=None, k=4):
             "group": spec["group"],
             "value": float(value),
             "contribution": float(contrib[idx]),
-            "phrase": spec["phrase"].format(v=value, base=base if base is not None else 0),
+            "phrase": describe(name, value, base),
         })
     return bias, out
 

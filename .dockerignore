@@ -1,0 +1,10 @@
+data/
+dataset/
+models/*.pkl
+.venv/
+.git/
+docs/
+*.webm
+*.7z
+*.zip
+__pycache__/

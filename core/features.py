@@ -22,7 +22,7 @@ FEATURES = {
         "group": "активность", "higher_is_worse": True,
     },
     "ev_ratio_7d": {
-        "phrase": "темп событий выше личной нормы в {v:.1f} раза",
+        "phrase": "темп событий к личной норме канала: ×{v:.1f}",
         "group": "активность", "higher_is_worse": True,
     },
     "active_days_7d": {
@@ -46,11 +46,11 @@ FEATURES = {
         "group": "отказы", "higher_is_worse": True,
     },
     "fault_ratio_90d": {
-        "phrase": "неисправностей вчетверо больше личной нормы (×{v:.1f})",
+        "phrase": "неисправностей в {v:.1f} раза больше личной нормы канала",
         "group": "отказы", "higher_is_worse": True,
     },
     "days_since_fault": {
-        "phrase": "последняя неисправность была {v:.0f} суток назад",
+        "phrase": "последняя неисправность: {v:.0f} суток назад",
         "group": "отказы", "higher_is_worse": False,
     },
     "undefined_ev_7d": {
@@ -102,8 +102,20 @@ FEATURES = {
 FEATURE_NAMES = list(FEATURES)
 
 
+SPECIAL = {
+    # «0 суток назад» звучит как ошибка, хотя означает самое тревожное — сегодня
+    "days_since_fault": lambda v: ("неисправность зафиксирована сегодня" if v < 1
+                                   else f"последняя неисправность: {v:.0f} суток назад"),
+    "is_weekend": lambda v: "выходной день" if v else "будний день",
+    "silence_days": lambda v: ("канал выходил на связь сегодня" if v < 1
+                               else f"молчит {v:.0f} суток подряд"),
+}
+
+
 def describe(name, value, baseline=None):
     """Человеческая фраза про конкретное значение признака."""
+    if name in SPECIAL:
+        return SPECIAL[name](value)
     spec = FEATURES.get(name)
     if spec is None:
         return f"{name} = {value}"
