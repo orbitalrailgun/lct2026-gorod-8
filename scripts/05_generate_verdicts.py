@@ -29,7 +29,7 @@ def main():
     models = scoring.load_model()
 
     for m in ("pump_anomaly", "pump_network", "pump_day", "fire_candidate",
-              "intrusion_event", "fact_channel_day"):
+              "intrusion_event", "fact_channel_day", "temp_state"):
         etl.load_mart(con, m)
 
     verdicts = scoring.score_day(con, models, LAST_DAY, limit=120)

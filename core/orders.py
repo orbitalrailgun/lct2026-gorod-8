@@ -18,6 +18,8 @@
 
 import datetime as dt
 
+from core import calendar_risk
+
 # Тип работ по сценарию и оборудованию. Таблица, а не логика в коде:
 # формулировки правит команда эксплуатации, не разработчик.
 WORK_TYPES = {
@@ -118,13 +120,18 @@ def build_draft(verdict, day, cascade=False, author=None):
 
     priority = derive_priority(probability, verdict.get("scenario"),
                                incubation, cascade)
+    due = derive_due_date(day, priority, incubation)
+    # Срок сдвигается перед длинными выходными: заявка, попавшая на период
+    # с уменьшенным числом бригад, провисит все нерабочие дни.
+    due, calendar_note = calendar_risk.adjust_due_date(due, day)
     return {
         "verdict_id": verdict.get("id"),
         "object_name": verdict.get("object_name"),
         "picket": verdict.get("picket"),
         "work_type": work_type(verdict.get("scenario"), card.get("sensor_type")),
         "priority": priority,
-        "due_date": derive_due_date(day, priority, incubation),
+        "due_date": due,
+        "calendar_note": calendar_note,
         "responsible": RESPONSIBLE.get(verdict.get("scenario"), "Служба эксплуатации"),
         "justification": build_justification(card),
         "recommendation": card.get("recommendation"),
@@ -141,6 +148,9 @@ def summary_line(draft):
     where = draft["object_name"] or ""
     if draft.get("picket") is not None:
         where += f", ПК{draft['picket']}"
-    return (f"{draft['work_type']} — {where}. "
+    line = (f"{draft['work_type']} — {where}. "
             f"Приоритет {draft['priority']}, срок до {draft['due_date']:%d.%m.%Y}, "
             f"исполнитель: {draft['responsible']}.")
+    if draft.get("calendar_note"):
+        line += f" {draft['calendar_note'].capitalize()}."
+    return line

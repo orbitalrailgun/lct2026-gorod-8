@@ -16,7 +16,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-from core import config, explain
+from core import calendar_risk, config, explain, temperature
 from core.features import FEATURES, FEATURE_NAMES
 
 MODEL_VERSION = "m1-failure-v1"
@@ -57,6 +57,12 @@ def score_day(con, models, day, limit=100, horizon_hours=None, with_precedent=Tr
         values = {name: row[name] for name in FEATURE_NAMES}
         bias, evidence = explain.top_evidence(models["forest"], X[i], values, k=4)
         v = _build(row, float(scores[i]), bias, evidence, models, X[i], horizon_hours)
+        temp_ev, temp_blind = temperature_evidence(
+            con, v["object_id"], v["picket"], day)
+        if temp_ev:
+            v["card"]["evidence"].extend(temp_ev)
+        if temp_blind:
+            v["card"]["blind_spots"].extend(temp_blind)
         if with_precedent:
             v["card"]["precedent"] = find_precedent(
                 con, v["object_id"], v["picket"], day)
@@ -140,6 +146,54 @@ def _negatives(row):
     if float(row.get("domain_dev_share_7d") or 0) < 0.2:
         out.append("массовая авария: соседние каналы точки в норме")
     return out
+
+
+# Радиус поиска ближайшего температурного датчика, в пикетах.
+# Температура есть лишь в 416 точках из 3 774; расширение до 100 метров
+# добавляет ещё 674 точки. Дальше расширять нельзя: тепловой режим меняется
+# вдоль трассы, и показание за 300 метров о состоянии точки уже не говорит.
+TEMP_SEARCH_PICKETS = 10
+
+
+def temperature_evidence(con, object_id, picket, day):
+    """Температурные улики точки.
+
+    Если датчика в самой точке нет, берётся ближайший на объекте в пределах
+    ста метров — с обязательным указанием расстояния. Если температуры нет
+    на объекте вовсе, это не молчание, а факт: тепловой режим не контролируется,
+    и вердикт обязан это сказать.
+    """
+    if object_id is None or picket is None:
+        return [], []
+
+    rows = con.execute(f"""
+        SELECT *, abs(picket - {picket}) AS dist FROM temp_state
+        WHERE object_id = {object_id} AND d = DATE '{day}'
+          AND abs(picket - {picket}) <= {TEMP_SEARCH_PICKETS}
+        ORDER BY dist LIMIT 1
+    """).df()
+
+    if rows.empty:
+        has_any = con.execute(f"""
+            SELECT count(*) FROM temp_state WHERE object_id = {object_id} LIMIT 1
+        """).fetchone()[0]
+        if has_any:
+            return [], ["ближайший температурный датчик дальше 100 м — "
+                        "тепловой режим этой точки не контролируется"]
+        return [], ["температурных датчиков на объекте нет — "
+                    "тепловой режим не контролируется"]
+
+    row = rows.iloc[0].to_dict()
+    phrases = temperature.describe(row)
+    if not phrases:
+        return [], []
+
+    dist = int(row.get("dist") or 0)
+    where = "" if dist == 0 else f" (датчик в {dist * 10} м)"
+    evidence = [{"feature": "temperature", "group": "тепловой режим",
+                 "value": float(row.get("t_avg") or 0), "contribution": 0.0,
+                 "since": f"{day}", "phrase": p + where} for p in phrases]
+    return evidence, temperature.blind_spot_note(row)
 
 
 def _build(row, probability, bias, evidence, models, x, horizon_hours):
@@ -361,11 +415,18 @@ def score_intrusion_day(con, day, limit=20):
     if df.empty:
         return []
 
+    cal_mult, cal_note = calendar_risk.risk_factor(day)
+
     out = []
     for _, row in df.iterrows():
         score, why = intrusion.score_intrusion(row)
         if score < 0.3:
             continue
+        # Календарь не создаёт инцидент, но меняет вероятность присутствия
+        # людей на объекте: в праздники объект чаще остаётся без присмотра.
+        if cal_note and cal_mult > 1.0:
+            score = min(1.0, score * cal_mult)
+            why.append(cal_note)
         evidence = [{"feature": "intrusion", "group": "охрана",
                      "value": float(row["n_types"]), "contribution": score / max(len(why), 1),
                      "phrase": w} for w in why]
