@@ -97,6 +97,29 @@ CREATE TABLE IF NOT EXISTS setting (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Черновик заявки на ремонт. Реальная отправка во внешнюю систему не требуется:
+-- журнал ОДС ведётся отдельно и интегрирован не будет. Заявка формируется здесь
+-- и выгружается в XLSX, а обоснование переносится из карточки вердикта целиком,
+-- чтобы документ не расходился с данными, на которых построен прогноз.
+CREATE TABLE IF NOT EXISTS work_order_draft (
+    id             BIGSERIAL PRIMARY KEY,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    verdict_id     BIGINT REFERENCES verdict(id) ON DELETE SET NULL,
+    author_id      INTEGER REFERENCES app_user(id),
+    object_name    TEXT,
+    picket         INTEGER,
+    work_type      TEXT NOT NULL,
+    priority       TEXT NOT NULL,
+    due_date       DATE,
+    responsible    TEXT,
+    justification  TEXT,
+    recommendation TEXT,
+    status         TEXT NOT NULL DEFAULT 'черновик'
+);
+
+CREATE INDEX IF NOT EXISTS work_order_verdict_idx ON work_order_draft (verdict_id);
+CREATE INDEX IF NOT EXISTS work_order_due_idx     ON work_order_draft (due_date);
+
 -- Требование ТЗ: журналирование всех действий пользователей.
 CREATE TABLE IF NOT EXISTS audit_log (
     id         BIGSERIAL PRIMARY KEY,
@@ -244,3 +267,46 @@ def record_decision(con, verdict_id, user_id, action, reason_code, comment=None)
     log_action(con, user_id, "решение", "verdict", verdict_id,
                {"action": action, "reason": reason_code})
     return decision_id
+
+
+def create_work_order(con, draft, user_id=None):
+    """Сохраняет черновик заявки и пишет действие в журнал."""
+    with con.cursor() as cur:
+        cur.execute(
+            """INSERT INTO work_order_draft
+               (verdict_id, author_id, object_name, picket, work_type, priority,
+                due_date, responsible, justification, recommendation)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
+            (draft.get("verdict_id"), user_id, draft.get("object_name"),
+             draft.get("picket"), draft["work_type"], draft["priority"],
+             draft.get("due_date"), draft.get("responsible"),
+             draft.get("justification"), draft.get("recommendation")))
+        order_id = cur.fetchone()[0]
+    log_action(con, user_id, "черновик заявки", "work_order_draft", order_id,
+               {"verdict_id": draft.get("verdict_id"), "priority": draft["priority"]})
+    return order_id
+
+
+def fetch_work_orders(con, limit=200):
+    """Список черновиков заявок для страницы и выгрузки."""
+    with con.cursor() as cur:
+        cur.execute("""
+            SELECT w.id, w.created_at, w.object_name, w.picket, w.work_type,
+                   w.priority, w.due_date, w.responsible, w.status,
+                   w.justification, w.recommendation, u.full_name, w.verdict_id
+            FROM work_order_draft w
+            LEFT JOIN app_user u ON u.id = w.author_id
+            ORDER BY w.due_date NULLS LAST, w.created_at DESC
+            LIMIT %s
+        """, (limit,))
+        cols = [c.name for c in cur.description]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+
+
+def work_order_exists(con, verdict_id):
+    """Есть ли уже заявка по этому вердикту — чтобы не плодить дубли."""
+    with con.cursor() as cur:
+        cur.execute("SELECT id FROM work_order_draft WHERE verdict_id = %s LIMIT 1",
+                    (verdict_id,))
+        row = cur.fetchone()
+    return row[0] if row else None

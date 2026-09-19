@@ -112,6 +112,27 @@ def build_report(con):
     ws.append(["приборами невозможно: в точке нет датчика нужного типа либо"])
     ws.append(["соседние каналы молчат. Это основание для дооснащения объекта."])
 
+    # --- лист «Заявки»
+    ws = wb.create_sheet("Заявки")
+    with con.cursor() as cur:
+        cur.execute("""
+            SELECT w.id, w.created_at, w.object_name, w.picket, w.work_type,
+                   w.priority, w.due_date, w.responsible, w.status,
+                   w.recommendation, u.full_name
+            FROM work_order_draft w
+            LEFT JOIN app_user u ON u.id = w.author_id
+            ORDER BY w.due_date NULLS LAST
+        """)
+        wo = cur.fetchall()
+    _write_sheet(
+        ws,
+        ["№", "Создана", "Объект", "ПК", "Тип работ", "Приоритет",
+         "Срок", "Исполнитель", "Статус", "Рекомендация", "Автор"],
+        [[r[0], r[1].strftime("%d.%m.%Y %H:%M") if r[1] else "", r[2], r[3], r[4],
+          r[5], r[6].strftime("%d.%m.%Y") if r[6] else "", r[7], r[8], r[9], r[10]]
+         for r in wo],
+        widths=[6, 17, 24, 7, 38, 13, 12, 26, 12, 50, 22])
+
     return wb
 
 

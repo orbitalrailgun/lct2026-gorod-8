@@ -14,7 +14,7 @@ import os
 
 from nicegui import app, ui
 
-from core import auth, cards, config, db, explain, reports
+from core import auth, cards, config, db, explain, orders, reports
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
@@ -139,6 +139,7 @@ def header():
             ui.button("Схема", on_click=lambda: ui.navigate.to("/scheme")).props("flat dense color=white")
             ui.button("Карта", on_click=lambda: ui.navigate.to("/map")).props("flat dense color=white")
             ui.button("Журнал", on_click=lambda: ui.navigate.to("/journal")).props("flat dense color=white")
+            ui.button("Заявки", on_click=lambda: ui.navigate.to("/orders")).props("flat dense color=white")
             user = current_user()
             if user and auth.rights(user["role"])["can_admin"]:
                 ui.button("Настройки", on_click=lambda: ui.navigate.to("/admin")) \
@@ -232,6 +233,8 @@ def verdict_card(v):
                           on_click=lambda vid=v["id"]: do_ack(vid)).props("outline dense")
             ui.button("Решение", icon="assignment",
                       on_click=lambda vid=v["id"]: decision_dialog(vid)).props("dense")
+            ui.button("Заявка", icon="construction",
+                      on_click=lambda vv=v: work_order_dialog(vv)).props("outline dense")
 
 
 def do_ack(verdict_id):
@@ -277,6 +280,117 @@ def decision_dialog(verdict_id):
             ui.button("Отмена", on_click=dialog.close).props("flat")
             ui.button("Сохранить", on_click=save)
     dialog.open()
+
+
+def work_order_dialog(verdict):
+    """Черновик заявки: поля выведены из вердикта, диспетчер их проверяет.
+
+    Обоснование не редактируется как свободный текст — оно перенесено
+    из карточки целиком. Если бы его набирали заново, заявка со временем
+    начала бы расходиться с данными, на которых построен прогноз.
+    """
+    con = get_con()
+    day = config.__dict__.get("DEMO_DAY", "2026-05-06")
+    draft = orders.build_draft(verdict, day,
+                               author=(current_user() or {}).get("full_name"))
+
+    existing = db.work_order_exists(con, verdict["id"]) if con is not None else None
+
+    with ui.dialog() as dialog, ui.card().classes("w-[40rem]"):
+        ui.label("Черновик заявки на ремонт").classes("text-lg font-semibold")
+        ui.label(draft["title"] or "").classes("text-sm opacity-70")
+        if existing:
+            ui.label(f"По этому вердикту уже есть заявка № {existing}") \
+                .classes("text-sm text-amber-700")
+        ui.separator()
+
+        wt = ui.input("тип работ", value=draft["work_type"]).classes("w-full")
+        with ui.row().classes("w-full gap-2"):
+            pr = ui.select(list(orders.PRIORITIES), value=draft["priority"],
+                           label="приоритет").classes("flex-1")
+            due = ui.input("срок", value=str(draft["due_date"])).classes("flex-1")
+        resp = ui.input("исполнитель", value=draft["responsible"]).classes("w-full")
+
+        with ui.expansion("Обоснование (из карточки вердикта)",
+                          icon="fact_check").classes("w-full"):
+            ui.label(draft["justification"]).classes("text-sm whitespace-pre-wrap")
+        if draft.get("recommendation"):
+            ui.label("Что делать: " + draft["recommendation"]).classes("text-sm opacity-80")
+
+        def save():
+            c = get_con()
+            if c is None:
+                ui.notify("Оперативный контур недоступен", type="warning")
+                dialog.close()
+                return
+            draft.update(work_type=wt.value, priority=pr.value,
+                         due_date=due.value, responsible=resp.value)
+            order_id = db.create_work_order(c, draft, (current_user() or {}).get("id"))
+            ui.notify(f"Черновик заявки № {order_id} создан")
+            dialog.close()
+
+        with ui.row().classes("w-full justify-end gap-2"):
+            ui.button("Отмена", on_click=dialog.close).props("flat")
+            ui.button("Создать черновик", on_click=save)
+    dialog.open()
+
+
+@ui.page("/orders")
+def orders_page():
+    """Реестр черновиков заявок.
+
+    Реальная отправка во внешнюю систему не требуется — журнал ОДС ведётся
+    отдельно и интегрирован не будет. Заявки формируются здесь и выгружаются.
+    """
+    if not require_login():
+        return
+    header()
+    con = get_con()
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        with ui.row().classes("w-full items-baseline justify-between"):
+            ui.label("Черновики заявок").classes("text-xl font-semibold")
+            ui.button("Выгрузить XLSX",
+                      on_click=lambda: ui.download("/api/report.xlsx")).props("flat dense")
+        ui.label(
+            "Заявка формируется из вердикта: тип работ, приоритет и срок выводятся "
+            "из вероятности и вызревания признаков, обоснование переносится "
+            "из карточки целиком."
+        ).classes("text-sm opacity-70")
+
+        if con is None:
+            ui.label("Оперативный контур недоступен").classes("opacity-60")
+            return
+
+        rows = db.fetch_work_orders(con)
+        if not rows:
+            ui.label("Черновиков пока нет — создайте заявку из карточки вердикта") \
+                .classes("opacity-60")
+            return
+
+        by_priority = {}
+        for r in rows:
+            by_priority[r["priority"]] = by_priority.get(r["priority"], 0) + 1
+        with ui.row().classes("w-full gap-4"):
+            for pr in reversed(orders.PRIORITIES):
+                with ui.card().classes("flex-1"):
+                    ui.label(str(by_priority.get(pr, 0))).classes("text-2xl font-bold")
+                    ui.label(pr).classes("text-xs opacity-70")
+
+        for r in rows:
+            with ui.card().classes("w-full"):
+                with ui.row().classes("w-full items-center justify-between"):
+                    with ui.column().classes("gap-0"):
+                        ui.label(f"№ {r['id']} · {r['work_type']}").classes("font-semibold")
+                        where = r["object_name"] or ""
+                        if r["picket"] is not None:
+                            where += f", ПК{r['picket']}"
+                        ui.label(f"{where} · {r['responsible']}").classes("text-xs opacity-60")
+                    with ui.column().classes("items-end gap-0"):
+                        ui.badge(r["priority"])
+                        ui.label(f"до {r['due_date']:%d.%m.%Y}" if r["due_date"] else "") \
+                            .classes("text-xs opacity-60")
+                with ui.expansion("Обоснование", icon="fact_check").classes("w-full"):
+                    ui.label(r["justification"] or "").classes("text-sm whitespace-pre-wrap")
 
 
 @ui.refreshable
