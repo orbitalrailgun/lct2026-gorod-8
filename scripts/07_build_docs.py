@@ -23,14 +23,33 @@
 
 import os
 import re
+import sys
 
 import markdown
 from weasyprint import HTML
 
 from core import config
 
-SOURCE = os.path.join(config.ROOT, "docs", "13-пояснительная-записка.md")
-TARGET = os.path.join(config.ROOT, "docs", "пояснительная-записка.pdf")
+# Документы собираются одним кодом: вёрстка у них общая, различаются
+# только исходник, имя файла и титул. Заводить второй скрипт ради
+# титульной страницы значило бы развести оформление двух документов,
+# которые заказчик получит в одном пакете.
+DOCUMENTS = {
+    "записка": {
+        "source": "13-пояснительная-записка.md",
+        "target": "пояснительная-записка.pdf",
+        "kicker": "Сопроводительная документация",
+        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
+        "running": "Дискреция творца · задача №8 «Город»",
+    },
+    "руководство": {
+        "source": "14-руководство-пользователя.md",
+        "target": "руководство-пользователя.pdf",
+        "kicker": "Руководство пользователя",
+        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
+        "running": "Руководство пользователя · задача №8 «Город»",
+    },
+}
 
 CSS = """
 @page {
@@ -43,7 +62,7 @@ CSS = """
         color: #888;
     }
     @top-right {
-        content: "Дискреция творца · задача №8 «Город»";
+        content: "__RUNNING__";
         font-family: "PT Sans", sans-serif;
         font-size: 7.5pt;
         color: #aaa;
@@ -120,8 +139,8 @@ em { color: #475569; }
 
 COVER = """
 <div class="cover">
-  <h1>Сопроводительная документация</h1>
-  <h2>Сервис прогнозирования инцидентов<br>в инженерных коллекторах</h2>
+  <h1>__KICKER__</h1>
+  <h2>__TITLE__</h2>
   <hr>
   <p>Задача №8 «Город»</p>
   <p>Конкурс «Лидеры цифровых трансформаций 2026»</p>
@@ -142,7 +161,7 @@ def split_source(text):
     return parts[0], parts[1]
 
 
-def build_html(body_md):
+def build_html(body_md, spec):
     md = markdown.Markdown(extensions=["tables", "fenced_code", "toc",
                                        "attr_list", "sane_lists"],
                            extension_configs={"toc": {"title": ""}})
@@ -151,24 +170,36 @@ def build_html(body_md):
     body_html = body_html.replace('<div class="toc">',
                                   '<div class="toc-title">Содержание</div>'
                                   '<div class="toc">', 1)
+    css = CSS.replace("__RUNNING__", spec["running"])
+    cover = COVER.replace("__KICKER__", spec["kicker"]) \
+                 .replace("__TITLE__", spec["title"])
     return (f"<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
-            f"<title>Сопроводительная документация — Дискреция творца</title>"
-            f"<style>{CSS}</style></head><body>{COVER}{body_html}</body></html>")
+            f"<title>{spec['kicker']} — Дискреция творца</title>"
+            f"<style>{css}</style></head><body>{cover}{body_html}</body></html>")
 
 
-def main():
-    with open(SOURCE, encoding="utf-8") as fh:
+def build(name, spec):
+    source = os.path.join(config.ROOT, "docs", spec["source"])
+    target = os.path.join(config.ROOT, "docs", spec["target"])
+    with open(source, encoding="utf-8") as fh:
         text = fh.read()
     _, body = split_source(text)
     # Горизонтальные разделители между разделами в PDF не нужны: разрыв страницы
     # перед каждым разделом делает то же самое, но чище.
     body = re.sub(r"\n---\n", "\n", body)
 
-    html = build_html(body)
-    HTML(string=html, base_url=config.ROOT).write_pdf(TARGET)
-    size = os.path.getsize(TARGET) / 1024
-    print(f"собрано: {TARGET}")
-    print(f"размер: {size:.0f} КБ")
+    HTML(string=build_html(body, spec), base_url=config.ROOT).write_pdf(target)
+    print(f"{name}: {spec['target']}, {os.path.getsize(target) / 1024:.0f} КБ")
+
+
+def main():
+    wanted = sys.argv[1:] or list(DOCUMENTS)
+    for name in wanted:
+        spec = DOCUMENTS.get(name)
+        if spec is None:
+            print(f"неизвестный документ: {name}; доступны: {', '.join(DOCUMENTS)}")
+            continue
+        build(name, spec)
 
 
 if __name__ == "__main__":
