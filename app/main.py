@@ -1025,12 +1025,26 @@ def analytics_page():
             name = r["object_name"] or "без объекта"
             matrix[r["scenario"]][name] = matrix[r["scenario"]].get(name, 0) + 1
         if order:
+            # Таблица под диаграммой — не дубль, а требование доступности:
+            # у жёлтого контраст к белому ниже 3:1, и значение обязано быть
+            # доступно текстом, а не только длиной сегмента.
+            columns = [{"name": "obj", "label": "объект", "field": "obj",
+                        "align": "left"}]
+            columns += [{"name": s_, "label": s_, "field": s_} for s_ in scenarios]
+            columns.append({"name": "all", "label": "всего", "field": "all"})
+            table_rows = []
+            for name in reversed(order):
+                row = {"obj": name, "all": objects[name]}
+                for s_ in scenarios:
+                    row[s_] = matrix[s_].get(name, 0) or ""
+                table_rows.append(row)
             chart_block(
                 "Вердикты по объектам",
                 "Диспетчер едет на объект, а не на канал: важно не только "
                 "сколько вердиктов, но и какого рода.",
                 charts.by_object(order, scenarios, matrix),
-                height=max(240, 34 * len(order) + 80))
+                height=max(240, 34 * len(order) + 80),
+                table=(columns, table_rows))
 
 
 # ------------------------------------------------------------- REST API
