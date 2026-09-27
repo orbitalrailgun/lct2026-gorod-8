@@ -9,12 +9,15 @@
 ОЭК тот же принцип реализован миганием до квитирования.
 """
 
+import hmac
 import json
 import os
 
+from fastapi import Request
+from fastapi.responses import JSONResponse, Response
 from nicegui import app, ui
 
-from core import auth, cards, charts, config, db, explain, orders, reports
+from core import auth, cards, charts, config, db, exchange, explain, orders, reports
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
@@ -1049,38 +1052,140 @@ def analytics_page():
 
 # ------------------------------------------------------------- REST API
 
-@app.get("/api/verdicts")
-def api_verdicts(scenario: str = None, status: str = None, limit: int = 100):
-    """Вердикты для внешних систем — требование ТЗ о REST-интерфейсе."""
+# Токен доступа к API. По умолчанию пуст, и тогда API открыт: данные
+# обезличены на стороне источника, интерфейс только на чтение, а эксперту,
+# проверяющему решение, не нужен секрет, о котором он не знает. Если токен
+# задан переменной окружения, он спрашивается со всех эндпоинтов, кроме
+# проверки живости — её должен видеть оркестратор.
+API_TOKEN = os.environ.get("API_TOKEN", "")
+
+# Значение HTTP-заголовка на проводе — latin-1, поэтому кириллический токен
+# до сервера доедет искажённым и не совпадёт никогда. Молча отдавать 401 на
+# верный, с точки зрения администратора, токен — худшее из поведений: ошибка
+# выглядит как поломка сервиса. Поэтому проверка на старте и внятный отказ.
+if API_TOKEN and not API_TOKEN.isascii():
+    raise SystemExit(
+        "API_TOKEN должен состоять из символов ASCII: значения HTTP-заголовков "
+        "передаются в latin-1, и токен с кириллицей не дойдёт неискажённым.")
+
+
+def check_token(request):
+    """Проверка токена. Возвращает отказ или None, если доступ разрешён.
+
+    Отказ возвращается, а не выбрасывается исключением: обработчик ошибок
+    интерфейса отрисовал бы клиенту API страницу на четверть мегабайта
+    вместо короткого JSON, который тот умеет разбирать.
+    """
+    if not API_TOKEN:
+        return None
+    supplied = request.headers.get("x-api-token") or ""
+    authorization = request.headers.get("authorization") or ""
+    if authorization.lower().startswith("bearer "):
+        supplied = authorization[7:].strip()
+    # Сравнение постоянного времени: посимвольное сравнение строк выдаёт
+    # длину совпавшего префикса разницей во времени ответа. Сравниваются
+    # байты, а не строки: compare_digest не принимает строки с кириллицей,
+    # а токен вполне может оказаться русским словом.
+    if hmac.compare_digest(supplied.encode("utf-8"), API_TOKEN.encode("utf-8")):
+        return None
+    return JSONResponse(status_code=401,
+                        content={"error": "требуется заголовок X-API-Token"})
+
+
+def api_rows(scenario=None, status=None, limit=100):
+    """Вердикты для выгрузки в любом формате — один источник на все четыре."""
     con = get_con()
     if con is None:
         rows, _ = load_verdicts(limit)
-        return {"count": len(rows), "items": rows}
-    rows = db.fetch_verdicts(con, status=status, scenario=scenario, limit=limit)
+        return rows
+    return db.fetch_verdicts(con, status=status, scenario=scenario, limit=limit)
+
+
+def attachment(data, media_type, filename):
+    return Response(content=data, media_type=media_type,
+                    headers={"Content-Disposition":
+                             f'attachment; filename="{filename}"'})
+
+
+@app.get("/api/verdicts")
+def api_verdicts(request: Request, scenario: str = None, status: str = None,
+                 limit: int = 100):
+    """Вердикты для внешних систем — требование ТЗ о REST-интерфейсе."""
+    denied = check_token(request)
+    if denied is not None:
+        return denied
+    rows = api_rows(scenario, status, limit)
     for r in rows:
-        r["created_at"] = r["created_at"].isoformat() if r["created_at"] else None
+        created = r.get("created_at")
+        r["created_at"] = created.isoformat() if hasattr(created, "isoformat") else created
     return {"count": len(rows), "items": rows}
 
 
+@app.get("/api/verdicts.xml")
+def api_verdicts_xml(request: Request, scenario: str = None, status: str = None,
+                     limit: int = 100):
+    """Те же вердикты в XML — раздел 7 ТЗ требует оба формата обмена."""
+    denied = check_token(request)
+    if denied is not None:
+        return denied
+    return Response(content=exchange.to_xml(api_rows(scenario, status, limit)),
+                    media_type="application/xml; charset=utf-8")
+
+
+@app.get("/api/verdicts.csv")
+def api_verdicts_csv(request: Request, scenario: str = None, status: str = None,
+                     limit: int = 1000):
+    """Плоская выгрузка вердиктов — файловый обмен CSV, раздел 7 ТЗ."""
+    denied = check_token(request)
+    if denied is not None:
+        return denied
+    return attachment(exchange.to_csv(api_rows(scenario, status, limit)),
+                      "text/csv; charset=utf-8", "concorde_verdicts.csv")
+
+
+@app.get("/api/geometry.geojson")
+def api_geometry_geojson(request: Request):
+    """Геометрия объектов и точки вердиктов — геоданные в GeoJSON, раздел 7 ТЗ."""
+    denied = check_token(request)
+    if denied is not None:
+        return denied
+    payload = json.dumps(exchange.to_geojson(load_geometry()), ensure_ascii=False)
+    return Response(content=payload.encode("utf-8"),
+                    media_type="application/geo+json; charset=utf-8")
+
+
+@app.get("/api/geometry.wkt")
+def api_geometry_wkt(request: Request):
+    """Та же геометрия в Well-Known Text — второй требуемый геоформат."""
+    denied = check_token(request)
+    if denied is not None:
+        return denied
+    return attachment(exchange.to_wkt(load_geometry()),
+                      "text/csv; charset=utf-8", "concorde_geometry_wkt.csv")
+
+
 @app.get("/api/report.xlsx")
-def api_report():
+def api_report(request: Request):
     """Выгрузка отчёта для руководства — требование ТЗ по форматам XLSX."""
-    from fastapi.responses import Response
+    denied = check_token(request)
+    if denied is not None:
+        return denied
     con = get_con()
     if con is None:
         return Response(content=b"", status_code=503)
     data = reports.to_bytes(reports.build_report(con))
-    return Response(
-        content=data,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": 'attachment; filename="concorde_report.xlsx"'},
-    )
+    return attachment(
+        data,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "concorde_report.xlsx")
 
 
 @app.get("/api/health")
 def api_health():
+    """Живость сервиса. Токеном не закрывается: её опрашивает оркестратор."""
     con = get_con()
-    return {"status": "ok", "database": con is not None}
+    return {"status": "ok", "database": con is not None,
+            "api_token_required": bool(API_TOKEN)}
 
 
 def main():
