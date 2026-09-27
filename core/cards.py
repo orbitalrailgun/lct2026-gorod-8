@@ -309,6 +309,10 @@ def blind_spot_summary(items):
         return None
     share = len(with_blind) / len(items)
     if share >= 0.5:
-        return (f"У {len(with_blind)} из {len(items)} вердиктов ограничена "
-                "наблюдаемость — подтвердить приборами получится не всё")
+        # «из 1 вердиктов» — родительный после «из»: один вердикта,
+        # два вердиктов, пять вердиктов.
+        return (f"У {len(with_blind)} из "
+                + plural.count(len(items), "вердикта", "вердиктов", "вердиктов")
+                + " ограничена наблюдаемость — "
+                "подтвердить приборами получится не всё")
     return None

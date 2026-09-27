@@ -17,7 +17,8 @@ from fastapi import Request
 from fastapi.responses import JSONResponse, Response
 from nicegui import app, ui
 
-from core import auth, cards, charts, config, db, exchange, explain, orders, reports
+from core import (auth, cards, charts, config, db, exchange, explain,
+                  orders, plural, reports)
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
@@ -164,6 +165,26 @@ def do_logout():
         db.log_action(con, user["id"], "выход из системы")
     app.storage.user.clear()
     ui.navigate.to("/login")
+
+
+def lazy_content(expansion, build):
+    """Наполнение раскрывающегося блока по первому раскрытию.
+
+    В очереди тринадцать мультикарточек, внутри них полторы сотни вердиктов
+    с хронологиями. Отрисовать это всё заранее — значит собирать на сервере
+    тысячи элементов на каждый запрос страницы: замер показал 11 секунд
+    при двадцати одновременных пользователях против 0,5 секунды в одиночку.
+    Диспетчер при этом раскрывает единицы, а видит сводку.
+    """
+    slot = ui.column().classes("w-full gap-0")
+
+    def draw(event):
+        if not event.value or slot.default_slot.children:
+            return
+        with slot:
+            build()
+
+    expansion.on_value_change(draw)
 
 
 def evidence_chart(expansion, evidence):
@@ -470,7 +491,8 @@ def multicard(m):
             with ui.column().classes("items-end gap-0"):
                 ui.label(f"{risk:.0%}").classes(
                     f"text-2xl font-bold text-{risk_color(risk)}-600")
-                ui.label(f"{m['n_cards']} вердиктов").classes("text-xs opacity-60")
+                ui.label(plural.count(m["n_cards"], "вердикт", "вердикта", "вердиктов")) \
+                    .classes("text-xs opacity-60")
 
         with ui.row().classes("gap-2 items-center"):
             for scenario, count in m["scenarios"].items():
@@ -493,18 +515,29 @@ def multicard(m):
             with ui.card().classes("bg-amber-50 w-full p-2"):
                 ui.label(note).classes("text-sm")
 
-        with ui.expansion(f"Общая хронология объекта ({len(m['timeline'])} записей)",
-                          icon="timeline").classes("w-full"):
-            for e in m["timeline"]:
+        timeline = ui.expansion(
+            "Общая хронология объекта ("
+            + plural.count(len(m["timeline"]), "запись", "записи", "записей") + ")",
+            icon="timeline").classes("w-full")
+
+        def draw_timeline(marks=m["timeline"]):
+            for e in marks:
                 with ui.row().classes("w-full items-baseline gap-3"):
-                    ui.label(e["ts"][:10]).classes("text-xs font-mono opacity-60 w-24")
+                    ui.label(fmt_ts(e["ts"])).classes(
+                        "text-xs font-mono opacity-60 w-36")
                     ui.badge(e["kind"]).props("outline")
                     ui.label(e["text"]).classes("text-sm")
 
-        with ui.expansion(f"Вердикты объекта ({m['n_cards']})",
-                          icon="list").classes("w-full"):
-            for v in m["cards"]:
+        lazy_content(timeline, draw_timeline)
+
+        listing = ui.expansion(f"Вердикты объекта ({m['n_cards']})",
+                               icon="list").classes("w-full")
+
+        def draw_cards(items=m["cards"]):
+            for v in items:
                 verdict_card(v)
+
+        lazy_content(listing, draw_cards)
 
 
 @ui.page("/login")
@@ -691,7 +724,8 @@ def scheme_page():
                 with ui.row().classes("w-full items-baseline justify-between"):
                     ui.label(object_name).classes("font-semibold")
                     ui.label(f"ПК{lo}–ПК{hi} · {(hi - lo) * 10} м · "
-                             f"{len(items)} вердиктов").classes("text-xs opacity-60")
+                             + plural.count(len(items), "вердикт", "вердикта",
+                                            "вердиктов")).classes("text-xs opacity-60")
 
                 marks = []
                 for r in items:
@@ -814,7 +848,8 @@ def map_page():
     with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-3"):
         with ui.row().classes("w-full items-baseline justify-between"):
             ui.label("Карта объектов").classes("text-xl font-semibold")
-            ui.label(f"{len(geometry)} объектов").classes("text-sm opacity-60")
+            ui.label(plural.count(len(geometry), "объект", "объекта", "объектов")) \
+                .classes("text-sm opacity-60")
 
         with ui.card().classes("bg-amber-50 w-full p-2"):
             ui.label(
@@ -870,7 +905,9 @@ def map_page():
                         ui.label(g["object_name"] + place).classes("font-medium")
                         ui.label(
                             f"ПК{g['picket_min']}–ПК{g['picket_max']}, "
-                            f"{g['length_m'] / 1000:.1f} км · {g['n_cards']} вердиктов"
+                            f"{g['length_m'] / 1000:.1f} км · "
+                            + plural.count(g["n_cards"], "вердикт", "вердикта",
+                                           "вердиктов")
                         ).classes("text-xs opacity-60")
                     ui.label(f"{g['max_probability']:.0%}").classes(
                         f"text-lg font-bold text-{risk_color(g['max_probability'])}-600")
