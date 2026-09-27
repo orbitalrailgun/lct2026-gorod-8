@@ -50,6 +50,24 @@ def require_login():
     return True
 
 
+def may_decide():
+    """Имеет ли текущий пользователь право фиксировать решения.
+
+    Право объявлено в ролевой модели с самого начала, но до 27.09 нигде
+    не проверялось: техник видел те же кнопки, что и диспетчер. Ролевая
+    модель, которая описана, но не применяется, хуже её отсутствия —
+    она создаёт ложную уверенность в разграничении.
+    """
+    user = current_user()
+    return bool(user) and auth.rights(user["role"])["can_decide"]
+
+
+def deny_decision():
+    """Отказ в действии, требующем права решения."""
+    ui.notify("Недостаточно прав: роль работает в режиме просмотра",
+              type="warning")
+
+
 def visible_to_user(rows):
     """Фильтр по области видимости роли.
 
@@ -280,17 +298,24 @@ def verdict_card(v):
                         if card.get("precedent"):
                             ui.label(card["precedent"]).classes("text-xs opacity-70")
 
-        with ui.row().classes("w-full justify-end gap-2"):
-            if new:
-                ui.button("Квитировать", icon="check",
-                          on_click=lambda vid=v["id"]: do_ack(vid)).props("outline dense")
-            ui.button("Решение", icon="assignment",
-                      on_click=lambda vid=v["id"]: decision_dialog(vid)).props("dense")
-            ui.button("Заявка", icon="construction",
-                      on_click=lambda vv=v: work_order_dialog(vv)).props("outline dense")
+        with ui.row().classes("w-full justify-end gap-2 items-center"):
+            if not may_decide():
+                ui.label("режим просмотра: фиксация решений недоступна для роли") \
+                    .classes("text-xs opacity-60")
+            else:
+                if new:
+                    ui.button("Квитировать", icon="check",
+                              on_click=lambda vid=v["id"]: do_ack(vid)).props("outline dense")
+                ui.button("Решение", icon="assignment",
+                          on_click=lambda vid=v["id"]: decision_dialog(vid)).props("dense")
+                ui.button("Заявка", icon="construction",
+                          on_click=lambda vv=v: work_order_dialog(vv)).props("outline dense")
 
 
 def do_ack(verdict_id):
+    if not may_decide():
+        deny_decision()
+        return
     con = get_con()
     if con is None:
         ui.notify("Оперативный контур недоступен — режим просмотра", type="warning")
@@ -302,6 +327,9 @@ def do_ack(verdict_id):
 
 def decision_dialog(verdict_id):
     """Фиксация решения: то, из чего со временем вырастет разметка."""
+    if not may_decide():
+        deny_decision()
+        return
     with ui.dialog() as dialog, ui.card().classes("w-96"):
         ui.label("Решение диспетчера").classes("text-lg font-semibold")
         action = ui.select(["выезд", "мониторинг", "без выезда"],
@@ -342,6 +370,9 @@ def work_order_dialog(verdict):
     из карточки целиком. Если бы его набирали заново, заявка со временем
     начала бы расходиться с данными, на которых построен прогноз.
     """
+    if not may_decide():
+        deny_decision()
+        return
     con = get_con()
     day = config.__dict__.get("DEMO_DAY", "2026-05-06")
     draft = orders.build_draft(verdict, day,

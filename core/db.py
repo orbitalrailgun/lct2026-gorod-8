@@ -229,8 +229,11 @@ def fetch_verdicts(con, status=None, scenario=None, limit=100):
     if scenario:
         where.append("scenario = %s")
         params.append(scenario)
-    sql = "SELECT id, created_at, scenario, object_name, picket, channel_id, " \
-          "probability, horizon_hours, status, card FROM verdict"
+    # object_id в выборке обязателен: по нему работает разграничение
+    # области видимости. Без него фильтр роли сравнивал None с назначениями
+    # и молча оставлял технику пустой экран.
+    sql = "SELECT id, created_at, scenario, object_id, object_name, picket, " \
+          "channel_id, probability, horizon_hours, status, card FROM verdict"
     if where:
         sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY probability DESC, created_at DESC LIMIT %s"

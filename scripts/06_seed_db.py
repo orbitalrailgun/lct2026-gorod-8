@@ -22,6 +22,44 @@ USERS = [
 ]
 
 
+def assign_objects(con):
+    """Назначение объектов ролям с ограниченной областью видимости.
+
+    Без назначений таблица `user_object` пуста, и техник видит всю сеть:
+    разграничение объявлено, но не наблюдаемо. Для демонстрации ролевой
+    модели назначения нужны — иначе проверяющий увидит у всех ролей
+    одинаковый экран и справедливо решит, что RBAC не работает.
+
+    Объекты берутся из фактических вердиктов, а не задаются числами:
+    иначе после пересчёта назначения укажут в пустоту.
+    """
+    with con.cursor() as cur:
+        cur.execute("SELECT count(*) FROM user_object")
+        if cur.fetchone()[0]:
+            return
+        cur.execute("""
+            SELECT object_id FROM verdict
+            WHERE object_id IS NOT NULL
+            GROUP BY object_id ORDER BY count(*) DESC LIMIT 6
+        """)
+        objects = [r[0] for r in cur.fetchall()]
+        if not objects:
+            return
+        # Техник обслуживает участок, группа реагирования выезжает на свой.
+        plan = {"tehnik": objects[:2], "brigade": objects[2:4]}
+        for login, ids in plan.items():
+            cur.execute("SELECT id FROM app_user WHERE login = %s", (login,))
+            row = cur.fetchone()
+            if not row:
+                continue
+            cur.executemany(
+                "INSERT INTO user_object (user_id, object_id) VALUES (%s,%s) "
+                "ON CONFLICT DO NOTHING",
+                [(row[0], oid) for oid in ids])
+        print(f"назначено объектов: техник {len(plan['tehnik'])}, "
+              f"группа реагирования {len(plan['brigade'])}")
+
+
 def main():
     con = db.connect()
     db.init_schema(con)
@@ -35,6 +73,8 @@ def main():
                 (login, name, role, pyotp.random_base32()))
         cur.execute("SELECT count(*) FROM verdict")
         existing = cur.fetchone()[0]
+
+    assign_objects(con)
 
     if existing:
         print(f"вердикты уже загружены ({existing}), пропуск")
