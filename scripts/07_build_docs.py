@@ -92,7 +92,10 @@ table { width: 100%; border-collapse: collapse; margin: 7pt 0 10pt 0;
         font-family: "PT Sans", sans-serif; font-size: 8pt; }
 thead { display: table-header-group; }
 th { background: #eef2f7; text-align: left; font-weight: bold; color: #0f172a; }
-th, td { border: 0.5pt solid #cbd5e1; padding: 2.5pt 4pt; vertical-align: top; }
+th, td { border: 0.5pt solid #cbd5e1; padding: 2.5pt 4pt; vertical-align: top;
+         /* В узкой колонке переносы по слогам рвут короткие слова статуса
+            («эмуля-ция»); в таблице лучше дать колонке расшириться. */
+         hyphens: none; }
 tr { break-inside: avoid; }
 
 /* ---- код и схемы ---- */
