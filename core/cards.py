@@ -12,7 +12,7 @@
 import datetime as dt
 from collections import Counter
 
-from core import timeline
+from core import plural, timeline
 
 # Родительный падеж для фразы «отказ датчика ...» — заранее, чтобы не строить
 # морфологию в рантайме и не зависеть от внешних библиотек.
@@ -49,19 +49,6 @@ SCENARIO_PLURAL = {
     "пожар": ("задымление", "задымления", "задымлений"),
     "проникновение": ("проникновение", "проникновения", "проникновений"),
 }
-
-
-def plural(n, forms):
-    """Русское склонение числительного: 1 отказ, 2 отказа, 5 отказов."""
-    n = abs(n) % 100
-    if 11 <= n <= 14:
-        return forms[2]
-    n %= 10
-    if n == 1:
-        return forms[0]
-    if 2 <= n <= 4:
-        return forms[1]
-    return forms[2]
 
 
 def build_title(scenario, sensor_name=None, sensor_type=None,
@@ -144,8 +131,9 @@ def incubation_phrase(days):
     if days == 1:
         return "признаки копятся сутки"
     if days <= 3:
-        return f"признаки копятся {days} суток"
-    return (f"признаки копятся {days} суток — деградация постепенная, "
+        return f"признаки копятся {plural.count(days, 'сутки', 'суток', 'суток')}"
+    return (f"признаки копятся {plural.count(days, 'сутки', 'суток', 'суток')}"
+            " — деградация постепенная, "
             "вероятно, можно закрыть плановой заявкой")
 
 
@@ -276,7 +264,8 @@ def detect_cascades(items, window_seconds=120, min_points=4, min_pickets=2):
             "n_signs": len(group),
             "span_seconds": span,
             "pickets": pickets,
-            "text": (f"{len(group)} признаков на {len(pickets)} точках возникли "
+            "text": (f"{plural.count(len(group), 'признак', 'признака', 'признаков')}"
+                     f" на {len(pickets)} точках возникли "
                      f"за {span:.0f} с ({group[0][0]:%d.%m %H:%M:%S}), "
                      f"отрезок ПК{pickets[0]}–ПК{pickets[-1]} "
                      f"({(pickets[-1] - pickets[0]) * 10} м). "
@@ -291,8 +280,8 @@ def build_summary(object_name, scenarios, pickets, items):
     parts = []
     for scenario, count in scenarios.most_common():
         forms = SCENARIO_PLURAL.get(scenario)
-        word = plural(count, forms) if forms else scenario
-        parts.append(f"{count} {word}")
+        parts.append(plural.count(count, *forms) if forms
+                     else f"{count} {scenario}")
 
     where = ""
     if pickets:

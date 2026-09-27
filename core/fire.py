@@ -16,6 +16,7 @@ Supervised-классификатор здесь построить не на ч
 нечем», вместо того чтобы округлить отсутствие подтверждения до его отсутствия.
 """
 
+from core import plural
 from core.trits import DEVIATION, NORMAL, UNKNOWN
 
 SMOKE_TYPE = "Датчик дыма"
@@ -159,7 +160,10 @@ def score_candidate(row):
     n_ch = int(row["n_smoke_ch"])
     if n_ch >= 3:
         score += 0.45
-        why.append(f"в одной точке сработало {n_ch} независимых дымовых датчика")
+        why.append("в одной точке сработало "
+                   + plural.count(n_ch, "независимый дымовой датчик",
+                                  "независимых дымовых датчика",
+                                  "независимых дымовых датчиков"))
     elif n_ch == 2:
         score += 0.30
         why.append("в одной точке сработали два независимых дымовых датчика")

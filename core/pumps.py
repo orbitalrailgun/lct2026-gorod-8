@@ -29,7 +29,7 @@
 
 import numpy as np
 
-from core import config
+from core import config, plural
 from core.trits import DEVIATION, NORMAL, UNKNOWN
 
 PUMP_TYPE = "Состояние насоса"
@@ -226,6 +226,9 @@ def verdict_phrase(n_starts, med_starts, sensor_name, picket):
     из данных подстановкой, без интерпретации.
     """
     if med_starts and med_starts > 0:
-        return (f"{sensor_name}: {n_starts:.0f} пусков за сутки "
+        return (f"{sensor_name}: "
+                f"{plural.count(n_starts, 'пуск', 'пуска', 'пусков')} за сутки "
                 f"против нормы {med_starts:.0f}")
-    return f"{sensor_name}: {n_starts:.0f} пусков за сутки, личной нормы ещё нет"
+    return (f"{sensor_name}: "
+            f"{plural.count(n_starts, 'пуск', 'пуска', 'пусков')} за сутки, "
+            "личной нормы ещё нет")

@@ -16,7 +16,7 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 
-from core import calendar_risk, config, explain, temperature
+from core import calendar_risk, config, explain, plural, temperature
 from core.features import FEATURES, FEATURE_NAMES
 
 MODEL_VERSION = "m1-failure-v1"
@@ -291,7 +291,8 @@ def score_pumps(con, day, limit=50):
             evidence.append({
                 "feature": "ratio", "group": "откачка", "since": first_start,
                 "value": float(row["ratio_to_norm"]), "contribution": 0.3,
-                "phrase": f"это в {row['ratio_to_norm']:.0f} раз выше личной нормы насоса",
+                "phrase": ("это в " + plural.count(row["ratio_to_norm"], "раз", "раза", "раз")
+                           + " выше личной нормы насоса"),
             })
         if row["duty_seconds"] and row["duty_seconds"] > 0:
             evidence.append({
@@ -508,4 +509,6 @@ def find_precedent(con, object_id, picket, before_day, scenario="отказ"):
     """).fetchone()
     if not row:
         return None
-    return f"Похожий случай: {row[0]:%d.%m.%Y}, та же точка, {int(row[1])} сообщений о неисправности."
+    return (f"Похожий случай: {row[0]:%d.%m.%Y}, та же точка, "
+            f"{plural.count(row[1], 'сообщение', 'сообщения', 'сообщений')} "
+            "о неисправности.")

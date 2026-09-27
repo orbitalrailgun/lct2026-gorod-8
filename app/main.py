@@ -14,17 +14,16 @@ import os
 
 from nicegui import app, ui
 
-from core import auth, cards, config, db, explain, orders, reports
+from core import auth, cards, charts, config, db, explain, orders, reports
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
 
-SCENARIO_HEX = {
-    "отказ": "#f59e0b",
-    "подтопление": "#3b82f6",
-    "пожар": "#ef4444",
-    "проникновение": "#a855f7",
-}
+# Цвет сценария задаётся в одном месте — core/charts.py — и одинаков
+# на диаграммах, на карте и на линейной схеме. Палитра проверена на
+# различимость при дальтонизме, поэтому менять её поштучно нельзя.
+SCENARIO_HEX = dict(charts.SCENARIO)
+NEUTRAL_HEX = "#8a8a85"
 
 STATE = {"scenario": None, "status": None}
 
@@ -140,6 +139,8 @@ def header():
             ui.button("Карта", on_click=lambda: ui.navigate.to("/map")).props("flat dense color=white")
             ui.button("Журнал", on_click=lambda: ui.navigate.to("/journal")).props("flat dense color=white")
             ui.button("Заявки", on_click=lambda: ui.navigate.to("/orders")).props("flat dense color=white")
+            ui.button("Аналитика", on_click=lambda: ui.navigate.to("/analytics")) \
+                .props("flat dense color=white")
             user = current_user()
             if user and auth.rights(user["role"])["can_admin"]:
                 ui.button("Настройки", on_click=lambda: ui.navigate.to("/admin")) \
@@ -160,6 +161,32 @@ def do_logout():
         db.log_action(con, user["id"], "выход из системы")
     app.storage.user.clear()
     ui.navigate.to("/login")
+
+
+def evidence_chart(expansion, evidence):
+    """Диаграмма вкладов, которая рисуется при раскрытии карточки.
+
+    Диаграмма показывает ровно то же, что список улик рядом: длина столбика —
+    вклад улики в решение. Числа продублированы подписями, поэтому график
+    читается и без цвета.
+
+    Строится лениво и один раз. В очереди бывает под две сотни карточек,
+    и создавать столько же графиков заранее — значит подвесить браузер
+    ради того, чего никто не смотрит: диспетчер раскрывает единицы.
+    """
+    slot = ui.column().classes("w-full gap-0")
+
+    def draw(event):
+        if not event.value or slot.default_slot.children:
+            return
+        with slot:
+            ui.echart(charts.evidence([
+                {"short": charts.shorten(e["phrase"]),
+                 "contribution": e["contribution"]}
+                for e in evidence
+            ])).classes("w-full").style(f"height: {60 + 26 * len(evidence)}px")
+
+    expansion.on_value_change(draw)
 
 
 def verdict_card(v):
@@ -183,12 +210,14 @@ def verdict_card(v):
                     f"text-xl font-bold text-{risk_color(v['probability'])}-600")
                 ui.label(f"за {v['horizon_hours']} ч").classes("text-xs opacity-60")
 
-        with ui.expansion("Почему так решено", icon="psychology").classes("w-full"):
+        with ui.expansion("Почему так решено", icon="psychology").classes("w-full") as why:
             for i, e in enumerate(card["evidence"], 1):
                 with ui.row().classes("w-full items-center justify-between"):
                     ui.label(f"{i}. {e['phrase']}").classes("text-sm")
                     ui.label(f"{e['contribution']:+.1%}").classes(
                         "text-sm font-mono opacity-70")
+            if len(card["evidence"]) > 1:
+                evidence_chart(why, card["evidence"])
             ui.separator()
             ui.label(
                 f"Базовая вероятность для такого канала {card['baseline']:.1%}; "
@@ -664,8 +693,7 @@ def scheme_page():
                 marks = []
                 for r in items:
                     x = 40 + (r["picket"] - lo) / span * 820
-                    color = {"отказ": "#f59e0b", "подтопление": "#3b82f6",
-                             "пожар": "#ef4444"}.get(r["scenario"], "#94a3b8")
+                    color = SCENARIO_HEX.get(r["scenario"], NEUTRAL_HEX)
                     radius = 5 + 5 * r["probability"]
                     marks.append(
                         f'<circle cx="{x:.0f}" cy="30" r="{radius:.1f}" fill="{color}" '
@@ -680,9 +708,10 @@ def scheme_page():
                     + "".join(marks) + "</svg>")
 
         with ui.row().classes("gap-4 text-xs opacity-70"):
-            for label, color in (("отказ датчика", "#f59e0b"),
-                                 ("подтопление", "#3b82f6"),
-                                 ("задымление", "#ef4444")):
+            for label, color in (("отказ датчика", SCENARIO_HEX["отказ"]),
+                                 ("подтопление", SCENARIO_HEX["подтопление"]),
+                                 ("задымление", SCENARIO_HEX["пожар"]),
+                                 ("проникновение", SCENARIO_HEX["проникновение"])):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(f'<span style="display:inline-block;width:10px;height:10px;'
                             f'border-radius:50%;background:{color}"></span>')
@@ -810,16 +839,16 @@ def map_page():
                 m.generic_layer(name="circleMarker", args=[
                     [p["lat"], p["lon"]],
                     {"radius": 4 + 6 * p["probability"],
-                     "color": SCENARIO_HEX.get(p["scenario"], "#94a3b8"),
-                     "fillColor": SCENARIO_HEX.get(p["scenario"], "#94a3b8"),
+                     "color": SCENARIO_HEX.get(p["scenario"], NEUTRAL_HEX),
+                     "fillColor": SCENARIO_HEX.get(p["scenario"], NEUTRAL_HEX),
                      "fillOpacity": 0.8, "weight": 1},
                 ])
 
         with ui.row().classes("gap-4 text-xs opacity-75 flex-wrap"):
-            for label, color in (("отказ датчика", "#f59e0b"),
-                                 ("подтопление", "#3b82f6"),
-                                 ("задымление", "#ef4444"),
-                                 ("проникновение", "#a855f7")):
+            for label, color in (("отказ датчика", SCENARIO_HEX["отказ"]),
+                                 ("подтопление", SCENARIO_HEX["подтопление"]),
+                                 ("задымление", SCENARIO_HEX["пожар"]),
+                                 ("проникновение", SCENARIO_HEX["проникновение"])):
                 with ui.row().classes("items-center gap-1"):
                     ui.html(f'<span style="display:inline-block;width:10px;height:10px;'
                             f'border-radius:50%;background:{color}"></span>')
@@ -842,6 +871,166 @@ def map_page():
                         ).classes("text-xs opacity-60")
                     ui.label(f"{g['max_probability']:.0%}").classes(
                         f"text-lg font-bold text-{risk_color(g['max_probability'])}-600")
+
+
+# ------------------------------------------------------------- аналитика
+
+ANALYTICS = os.path.join(config.ROOT, "deploy", "seed_analytics.json")
+
+
+def load_analytics():
+    """Предрассчитанные агрегаты для диаграмм качества и наблюдаемости.
+
+    Витрины в контейнер не уезжают, поэтому величины, которые считаются
+    по всей истории, готовятся офлайн скриптом scripts/09 и лежат рядом
+    с вердиктами.
+    """
+    if not os.path.exists(ANALYTICS):
+        return None
+    with open(ANALYTICS, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def stat_tile(value, title, note=None, color="text-slate-800"):
+    """Плашка с числом. Там, где история — это одно число, график не нужен."""
+    with ui.card().classes("p-4 flex-1 min-w-48"):
+        ui.label(value).classes(f"text-3xl font-bold {color}")
+        ui.label(title).classes("text-sm font-medium")
+        if note:
+            ui.label(note).classes("text-xs opacity-60")
+
+
+def chart_block(title, note, option, height=280, table=None):
+    """Диаграмма с заголовком, пояснением и таблицей значений.
+
+    Таблица здесь не дубль, а требование доступности: у части цветов
+    контраст к белому ниже 3:1, и число обязано быть доступно текстом,
+    а не только длиной столбика.
+    """
+    with ui.card().classes("w-full"):
+        ui.label(title).classes("text-base font-semibold")
+        ui.label(note).classes("text-xs opacity-70")
+        ui.echart(option).classes("w-full").style(f"height: {height}px")
+        if table:
+            columns, rows = table
+            ui.table(columns=columns, rows=rows).classes("w-full").props("dense flat")
+
+
+@ui.page("/analytics")
+def analytics_page():
+    """Диаграммы: качество прогноза, наблюдаемость, оперативная картина.
+
+    Страница отвечает на пункт финальной экспертизы об объективности
+    диаграмм. Поэтому здесь нет ни одной декоративной: каждая отвечает
+    на вопрос, который задают на защите, и каждая построена на величине,
+    которую можно проверить в данных.
+    """
+    if not require_login():
+        return
+    header()
+    data = load_analytics()
+    rows, _ = load_verdicts(500)
+    rows = visible_to_user(rows)
+
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("Аналитика").classes("text-xl font-semibold")
+        ui.label(
+            "Качество прогноза, границы наблюдаемости и текущая картина "
+            "по объектам. Все величины посчитаны на поставленных данных "
+            "и воспроизводятся скриптами репозитория."
+        ).classes("text-sm opacity-70")
+
+        # --- плашки: там, где история это одно число
+        with_blind = sum(1 for r in rows if r["card"].get("blind_spots"))
+        facts = (data or {}).get("facts", {})
+        with ui.row().classes("w-full gap-3 flex-wrap"):
+            stat_tile(str(len(rows)), "вердиктов в работе",
+                      "по всем четырём сценариям")
+            stat_tile(f"{with_blind * 100 // max(len(rows), 1)} %",
+                      "вердиктов с заявленной слепой зоной",
+                      "сервис сам говорит, где он слеп", "text-amber-700")
+            if facts:
+                stat_tile(f"{facts['orphans']:,}".replace(",", " "),
+                          "каналов без паспорта",
+                          "исключены из обучения и вердиктов", "text-amber-700")
+                stat_tile(f"{facts['guards_stuck']} из {facts['guards']}",
+                          "охранных каналов залипли",
+                          "показание «под охраной» недостоверно", "text-amber-700")
+
+        # --- качество прогноза
+        ui.label("Качество прогноза").classes("text-lg font-semibold mt-2")
+        if data and data.get("horizon"):
+            with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+                with ui.column().classes("flex-1 min-w-96"):
+                    chart_block(
+                        "Достижимая точность по горизонтам",
+                        "Целевая точность ТЗ достигается, но не на суточном "
+                        "горизонте: отказ вызревает неделями.",
+                        charts.horizon(data["horizon"]),
+                        table=(
+                            [{"name": "h", "label": "горизонт", "field": "h"},
+                             {"name": "p", "label": "точность", "field": "p"},
+                             {"name": "n", "label": "отказов в выборке", "field": "n"}],
+                            [{"h": r["label"], "p": f"{r['best_precision']:.0%}",
+                              "n": f"{r['positives']:,}".replace(",", " ")}
+                             for r in data["horizon"]]))
+                with ui.column().classes("flex-1 min-w-96"):
+                    chart_block(
+                        "Цена полноты: проверок в сутки",
+                        "Recall 0,5 из ТЗ означает 713 проверок в смену, "
+                        "из которых отказом окажутся две.",
+                        charts.recall_cost(data["recall"]),
+                        table=(
+                            [{"name": "r", "label": "полнота", "field": "r"},
+                             {"name": "a", "label": "проверок в сутки", "field": "a"},
+                             {"name": "p", "label": "точность", "field": "p"}],
+                            [{"r": f"{r['recall']:.0%}",
+                              "a": f"{r['alerts_per_day']:.0f}",
+                              "p": f"{r['precision']:.2%}"}
+                             for r in data["recall"]]))
+
+        # --- наблюдаемость
+        ui.label("Что сервис видит и чего не видит").classes("text-lg font-semibold mt-2")
+        with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+            if data and data.get("observability"):
+                obs = data["observability"]
+                with ui.column().classes("flex-1 min-w-96"):
+                    chart_block(
+                        "Объекты без контроля",
+                        "Столбик до конца шкалы означал бы, что контроля нет "
+                        "нигде в сети. Там, где контроля нет, вердикт обязан "
+                        "сказать об этом вместо «риск низкий».",
+                        charts.observability(obs["rows"], obs["objects"]),
+                        height=240)
+            with ui.column().classes("flex-1 min-w-96"):
+                chart_block(
+                    "Как копятся признаки",
+                    "Из этого распределения выводится срок заявки: "
+                    "постепенная деградация закрывается плановой, "
+                    "внезапное развитие требует выезда.",
+                    charts.incubation(charts.incubation_buckets(
+                        [r["card"].get("incubation_days") for r in rows])),
+                    height=240)
+
+        # --- оперативная картина
+        ui.label("Оперативная картина").classes("text-lg font-semibold mt-2")
+        scenarios = [s for s in charts.SCENARIO if any(r["scenario"] == s for r in rows)]
+        objects = {}
+        for r in rows:
+            objects[r["object_name"] or "без объекта"] = \
+                objects.get(r["object_name"] or "без объекта", 0) + 1
+        order = [name for name, _ in sorted(objects.items(), key=lambda kv: kv[1])]
+        matrix = {s: {} for s in scenarios}
+        for r in rows:
+            name = r["object_name"] or "без объекта"
+            matrix[r["scenario"]][name] = matrix[r["scenario"]].get(name, 0) + 1
+        if order:
+            chart_block(
+                "Вердикты по объектам",
+                "Диспетчер едет на объект, а не на канал: важно не только "
+                "сколько вердиктов, но и какого рода.",
+                charts.by_object(order, scenarios, matrix),
+                height=max(240, 34 * len(order) + 80))
 
 
 # ------------------------------------------------------------- REST API

@@ -1,0 +1,104 @@
+{
+ "horizon": [
+  {
+   "label": "24 часа",
+   "hours": 24,
+   "best_precision": 0.18,
+   "positives": 2401,
+   "base_rate": 0.0005311579087554335,
+   "target_met": false
+  },
+  {
+   "label": "3 суток",
+   "hours": 72,
+   "best_precision": 0.171875,
+   "positives": 6647,
+   "base_rate": 0.0014704733942096488,
+   "target_met": false
+  },
+  {
+   "label": "7 суток",
+   "hours": 168,
+   "best_precision": 0.18518518518518517,
+   "positives": 14645,
+   "base_rate": 0.003239819897427457,
+   "target_met": false
+  },
+  {
+   "label": "14 суток",
+   "hours": 336,
+   "best_precision": 0.7333333333333333,
+   "positives": 27906,
+   "base_rate": 0.006173466306426126,
+   "target_met": true
+  }
+ ],
+ "recall": [
+  {
+   "recall": 0.1,
+   "alerts": 7880,
+   "precision": 0.030583756345177664,
+   "alerts_per_day": 14.405850091407679
+  },
+  {
+   "recall": 0.2,
+   "alerts": 65860,
+   "precision": 0.007303370786516854,
+   "alerts_per_day": 120.40219378427788
+  },
+  {
+   "recall": 0.3,
+   "alerts": 136955,
+   "precision": 0.005264502938921544,
+   "alerts_per_day": 250.37477148080438
+  },
+  {
+   "recall": 0.5,
+   "alerts": 390105,
+   "precision": 0.003078658309942195,
+   "alerts_per_day": 713.1718464351005
+  },
+  {
+   "recall": 0.7,
+   "alerts": 967519,
+   "precision": 0.0017374335801157393,
+   "alerts_per_day": 1768.7733089579524
+  }
+ ],
+ "observability": {
+  "objects": 16,
+  "rows": [
+   {
+    "type": "тепловой контроль",
+    "objects_without": 13
+   },
+   {
+    "type": "контроль затопления",
+    "objects_without": 8
+   },
+   {
+    "type": "контроль насосов",
+    "objects_without": 1
+   },
+   {
+    "type": "температурный контроль",
+    "objects_without": 0
+   },
+   {
+    "type": "контроль задымления",
+    "objects_without": 0
+   }
+  ]
+ },
+ "facts": {
+  "channels": 11485,
+  "orphans": 1142,
+  "objects": 16,
+  "domains": 3759,
+  "domains_single": 1823,
+  "fire_local": 14088,
+  "fire_no_thermal": 12163,
+  "guards": 47,
+  "guards_stuck": 10
+ }
+}

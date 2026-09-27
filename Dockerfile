@@ -19,6 +19,7 @@ COPY app/ ./app/
 COPY scripts/ ./scripts/
 COPY deploy/seed_verdicts.json ./deploy/
 COPY deploy/seed_geometry.json ./deploy/
+COPY deploy/seed_analytics.json ./deploy/
 COPY deploy/entrypoint.sh ./deploy/
 RUN chmod +x ./deploy/entrypoint.sh
 

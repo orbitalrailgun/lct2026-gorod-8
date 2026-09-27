@@ -465,7 +465,7 @@ def slide_horizon(prs):
 
     frame = textbox(slide, PAD, top + Inches(1.9), CONTENT_W, Inches(1.0))
     write(frame, "Отказ оборудования вызревает неделями: медиана вызревания "
-                 "признаков — 29 суток. Чем шире окно, тем плотнее сигнал.",
+                 "признаков — 33 суток. Чем шире окно, тем плотнее сигнал.",
           17, INK, first=True)
 
     y = top + Inches(2.9)

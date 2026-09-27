@@ -9,7 +9,7 @@
 будущего в признаки не попадает.
 """
 
-from core import config
+from core import config, plural
 
 # Реестр признаков: имя -> как объяснить его диспетчеру.
 #   phrase   — шаблон фразы, {v} значение признака, {base} личная норма канала
@@ -26,11 +26,11 @@ FEATURES = {
         "group": "активность", "higher_is_worse": True,
     },
     "active_days_7d": {
-        "phrase": "канал выходил на связь {v:.0f} суток из 7",
+        "phrase": "канал выходил на связь {v:.0f} {сутки|суток|суток} из 7",
         "group": "активность", "higher_is_worse": False,
     },
     "silence_days": {
-        "phrase": "молчит {v:.0f} суток подряд",
+        "phrase": "молчит {v:.0f} {сутки|суток|суток} подряд",
         "group": "молчание", "higher_is_worse": True,
     },
     "silence_ratio": {
@@ -50,7 +50,7 @@ FEATURES = {
         "group": "отказы", "higher_is_worse": True,
     },
     "days_since_fault": {
-        "phrase": "последняя неисправность: {v:.0f} суток назад",
+        "phrase": "последняя неисправность: {v:.0f} {сутки|суток|суток} назад",
         "group": "отказы", "higher_is_worse": False,
     },
     "undefined_ev_7d": {
@@ -70,7 +70,7 @@ FEATURES = {
         "group": "состояние", "higher_is_worse": True,
     },
     "domain_size": {
-        "phrase": "в этой точке {v:.0f} каналов",
+        "phrase": "в этой точке {v:.0f} {канал|канала|каналов}",
         "group": "окружение", "higher_is_worse": False,
     },
     "domain_dev_share_7d": {
@@ -86,7 +86,7 @@ FEATURES = {
         "group": "инфраструктура", "higher_is_worse": True,
     },
     "channel_age_days": {
-        "phrase": "канал в эксплуатации {v:.0f} суток",
+        "phrase": "канал в эксплуатации {v:.0f} {сутки|суток|суток}",
         "group": "контекст", "higher_is_worse": False,
     },
     "month": {
@@ -129,10 +129,10 @@ def is_supported(name, values):
 SPECIAL = {
     # «0 суток назад» звучит как ошибка, хотя означает самое тревожное — сегодня
     "days_since_fault": lambda v: ("неисправность зафиксирована сегодня" if v < 1
-                                   else f"последняя неисправность: {v:.0f} суток назад"),
+                                   else f"последняя неисправность: {plural.count(v, 'сутки', 'суток', 'суток')} назад"),
     "is_weekend": lambda v: "выходной день" if v else "будний день",
     "silence_days": lambda v: ("канал выходил на связь сегодня" if v < 1
-                               else f"молчит {v:.0f} суток подряд"),
+                               else f"молчит {plural.count(v, 'сутки', 'суток', 'суток')} подряд"),
 }
 
 
@@ -144,7 +144,8 @@ def describe(name, value, baseline=None):
     if spec is None:
         return f"{name} = {value}"
     try:
-        return spec["phrase"].format(v=value, base=baseline if baseline is not None else 0)
+        template = plural.apply(spec["phrase"], value)
+        return template.format(v=value, base=baseline if baseline is not None else 0)
     except (KeyError, ValueError):
         return f"{name} = {value}"
 
