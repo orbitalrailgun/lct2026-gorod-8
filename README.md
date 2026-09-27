@@ -118,6 +118,7 @@ curl http://localhost:8080/api/health
 | `/scheme` | линейная схема коллекторов по пикетам |
 | `/journal` | журнал прогнозов с историей отработки |
 | `/orders` | черновики заявок на ремонт |
+| `/analytics` | диаграммы: качество прогноза, наблюдаемость, картина по объектам |
 | `/admin` | настраиваемые параметры и журнал действий |
 
 ### Полный пересчёт на данных
@@ -135,6 +136,15 @@ python -m scripts.02_twins_and_domains  # тёзки и логические д�
 python -m scripts.03_train_m1           # обучение и метрики
 python -m scripts.04_horizon_sweep      # кривая качества по горизонтам
 python -m scripts.05_generate_verdicts  # вердикты -> deploy/seed_verdicts.json
+python -m scripts.09_build_analytics    # агрегаты для диаграмм
+```
+
+Перезапуска контейнера после пересчёта **недостаточно**: загрузка вердиктов
+идемпотентна и пропускается при непустой таблице. Новый набор заливается явно:
+
+```bash
+docker compose exec db psql -U concorde -c "TRUNCATE verdict CASCADE;"
+docker compose exec app python -m scripts.06_seed_db
 ```
 
 ### Сборка документации
