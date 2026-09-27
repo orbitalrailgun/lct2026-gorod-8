@@ -8,3 +8,5 @@ docs/
 *.7z
 *.zip
 __pycache__/
+ТЗ/
+*.xlsx
