@@ -1,14 +1,23 @@
+# Значения по умолчанию совпадают с демонстрационными, поэтому локально
+# достаточно `docker compose up` без всякой настройки. На удалённом стенде
+# скрипт deploy/remote.sh создаёт рядом файл .env со случайными паролем
+# базы и секретом сессий, и они подставляются сюда автоматически.
+#
+# Важно: пароль базы фиксируется при первом запуске тома. Смена
+# POSTGRES_PASSWORD на уже созданном томе не меняет пароль внутри базы —
+# нужен либо ALTER USER, либо пересоздание тома.
+
 services:
   db:
     image: postgres:16-alpine
     environment:
-      POSTGRES_USER: concorde
-      POSTGRES_PASSWORD: concorde
-      POSTGRES_DB: concorde
+      POSTGRES_USER: ${POSTGRES_USER:-concorde}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-concorde}
+      POSTGRES_DB: ${POSTGRES_DB:-concorde}
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U concorde"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-concorde}"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -16,9 +25,15 @@ services:
   app:
     build: .
     environment:
-      DATABASE_URL: postgresql://concorde:concorde@db:5432/concorde
+      DATABASE_URL: postgresql://${POSTGRES_USER:-concorde}:${POSTGRES_PASSWORD:-concorde}@db:5432/${POSTGRES_DB:-concorde}
+      # Секрет сессий: на демонстрационном стенде значение по умолчанию,
+      # на удалённом — случайное из .env.
+      SESSION_SECRET: ${SESSION_SECRET:-concorde-demo-secret}
+      # Токен API по умолчанию пуст: проверяющий не должен натыкаться на 401.
+      API_TOKEN: ${API_TOKEN:-}
     ports:
-      - "8080:8080"
+      - "${APP_PORT:-8080}:8080"
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
