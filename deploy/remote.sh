@@ -58,6 +58,48 @@ TUNNEL_URL="http://localhost:${LOCAL_PORT}"
 # Слушает ли стенд только петлю.
 is_loopback() { [ "$BIND_ADDR" = "127.0.0.1" ] || [ "$BIND_ADDR" = "localhost" ]; }
 
+# Одно соединение на весь запуск.
+#
+# Скрипт обращается к машине полтора десятка раз: проверка, синхронизация,
+# определение compose, сборка, запуск, опрос готовности. Каждое обращение —
+# отдельное подключение, и при входе по паролю ssh спрашивал бы пароль
+# заново каждый раз. Мультиплексирование открывает одно соединение,
+# а остальные идут через него: пароль вводится единожды.
+#
+# Путь к управляющему сокету короткий намеренно: у сокетов Unix предел
+# длины пути около сотни символов, а временные каталоги в macOS длинные.
+CONTROL_PATH="/tmp/.concorde-ssh-$$"
+SHARED_OPTS="-o ControlMaster=auto -o ControlPath=$CONTROL_PATH -o ControlPersist=10m"
+MASTER_OPEN=no
+
+close_master() {
+    if [ "$MASTER_OPEN" = yes ]; then
+        # shellcheck disable=SC2086
+        ssh -O exit -o ControlPath="$CONTROL_PATH" -p "$SSH_PORT" $SSH_OPTS "$HOST" \
+            >/dev/null 2>&1 || true
+        MASTER_OPEN=no
+    fi
+}
+trap close_master EXIT INT TERM
+
+open_master() {
+    [ "$MASTER_OPEN" = no ] || return 0
+    [ -S "$CONTROL_PATH" ] && { MASTER_OPEN=yes; return 0; }
+
+    say "Подключение к $HOST"
+    info "если вход по паролю — он будет запрошен один раз на весь запуск"
+    # shellcheck disable=SC2086
+    if ssh -M -N -f -o ControlPath="$CONTROL_PATH" -o ControlPersist=10m \
+           -p "$SSH_PORT" $SSH_OPTS "$HOST"; then
+        MASTER_OPEN=yes
+        info "соединение установлено"
+    else
+        die "не удалось подключиться по SSH к $HOST (порт $SSH_PORT).
+  Проверьте адрес, пароль или ключ и доступность машины.
+  Вход по ключу настраивается командой: deploy/remote.sh keys"
+    fi
+}
+
 # ------------------------------------------------------------------ вывод
 
 say()  { printf '\n\033[1m%s\033[0m\n' "$*"; }
@@ -74,12 +116,13 @@ require_host() {
 # и режим остановки при ошибке задаются здесь, а не в каждом вызове.
 remote() {
     # shellcheck disable=SC2086
-    ssh -p "$SSH_PORT" $SSH_OPTS "$HOST" "set -e; cd '$REMOTE_DIR' 2>/dev/null || true; $*"
+    ssh $SHARED_OPTS -p "$SSH_PORT" $SSH_OPTS "$HOST" \
+        "set -e; cd '$REMOTE_DIR' 2>/dev/null || true; $*"
 }
 
 remote_raw() {
     # shellcheck disable=SC2086
-    ssh -p "$SSH_PORT" $SSH_OPTS "$HOST" "$*"
+    ssh $SHARED_OPTS -p "$SSH_PORT" $SSH_OPTS "$HOST" "$*"
 }
 
 # Docker Compose бывает как плагином (docker compose), так и отдельной
@@ -104,14 +147,14 @@ compose_run() {
 
 # ----------------------------------------------------------------- проверки
 
-cmd_check() {
+connect() {
     require_host
-    say "Проверка удалённой машины"
+    open_master
+}
 
-    remote_raw "echo ok" >/dev/null 2>&1 \
-        || die "не удалось подключиться по SSH к $HOST (порт $SSH_PORT).
-  Проверьте адрес, ключ и то, что машина доступна."
-    info "SSH: подключение есть"
+cmd_check() {
+    connect
+    say "Проверка удалённой машины"
 
     local system
     system="$(remote_raw "uname -sm; . /etc/os-release 2>/dev/null && echo \$PRETTY_NAME" | tr '\n' ' ')"
@@ -141,7 +184,7 @@ cmd_check() {
 }
 
 cmd_install_docker() {
-    require_host
+    connect
     say "Установка Docker на удалённой машине"
     warn "Команда ставит docker официальным скриптом get.docker.com."
     warn "Она требует прав root и меняет состояние машины."
@@ -164,7 +207,7 @@ sync_sources() {
     # виртуальное окружение и история git на стенде не нужны.
     # shellcheck disable=SC2086
     rsync -az --delete \
-        -e "ssh -p $SSH_PORT $SSH_OPTS" \
+        -e "ssh $SHARED_OPTS -p $SSH_PORT $SSH_OPTS" \
         --exclude '.git/' \
         --exclude '.venv/' \
         `# .env создаётся на стенде и живёт только там. Без этого` \
@@ -215,7 +258,7 @@ ensure_secrets() {
 # ------------------------------------------------------------------ развёртывание
 
 cmd_deploy() {
-    require_host
+    connect
     cmd_check
     sync_sources
     ensure_secrets
@@ -329,13 +372,14 @@ cmd_tunnel() {
     info "Завершить — Ctrl+C."
     info ""
     # shellcheck disable=SC2086
+    # Туннель живёт долго и своим соединением: общее закроется по выходе.
     exec ssh -N -L "$LOCAL_PORT:127.0.0.1:$APP_PORT" -p "$SSH_PORT" $SSH_OPTS "$HOST"
 }
 
 # ------------------------------------------------------------ эксплуатация
 
 cmd_status() {
-    require_host
+    connect
     say "Состояние стенда"
     compose_run ps
     info ""
@@ -348,19 +392,19 @@ cmd_status() {
 }
 
 cmd_logs() {
-    require_host
+    connect
     compose_run logs --tail "${1:-80}" app
 }
 
 cmd_restart() {
-    require_host
+    connect
     say "Перезапуск"
     compose_run restart app
     wait_for_health
 }
 
 cmd_reset() {
-    require_host
+    connect
     say "Возврат к исходному набору вердиктов"
     warn "Будут удалены вердикты, решения и черновики заявок."
     printf '  Продолжить? [y/N] '
@@ -373,11 +417,43 @@ cmd_reset() {
 }
 
 cmd_down() {
-    require_host
+    connect
     say "Остановка стенда"
     compose_run down
     info "контейнеры остановлены, данные сохранены"
     info "для полного удаления данных на стенде: docker compose down -v"
+}
+
+cmd_keys() {
+    require_host
+    say "Настройка входа по ключу"
+    info "Пароль спросят один раз — при копировании ключа."
+    info "После этого скрипт перестанет спрашивать его вовсе."
+
+    local key="${CONCORDE_KEY:-$HOME/.ssh/id_ed25519}"
+    if [ ! -f "$key" ]; then
+        info "Ключа $key нет, создаю."
+        ssh-keygen -t ed25519 -N "" -f "$key" || die "не удалось создать ключ"
+    fi
+
+    # ssh-copy-id намеренно не используется: он принимает ключ своим -i,
+    # и если тот же -i уже есть в CONCORDE_SSH_OPTS, программа спотыкается
+    # о повтор и печатает справку вместо работы. Переносимый путь короче
+    # и ведёт себя одинаково везде.
+    #
+    # sort -u на той стороне убирает повторы: команду можно запускать
+    # сколько угодно раз, файл ключей не распухнет.
+    # shellcheck disable=SC2086
+    ssh -p "$SSH_PORT" $SSH_OPTS "$HOST" \
+        "mkdir -p ~/.ssh && chmod 700 ~/.ssh \
+         && cat >> ~/.ssh/authorized_keys \
+         && sort -u -o ~/.ssh/authorized_keys ~/.ssh/authorized_keys \
+         && chmod 600 ~/.ssh/authorized_keys" < "$key.pub" \
+        || die "не удалось скопировать ключ на $HOST"
+
+    info "Готово. Проверка: deploy/remote.sh check"
+    info "Если ключ лежит не по умолчанию, добавляйте его к вызовам:"
+    info "  CONCORDE_SSH_OPTS=\"-i $key\""
 }
 
 cmd_url() {
@@ -406,6 +482,7 @@ usage() {
   reset           вернуть исходный набор вердиктов (спросит подтверждение)
   down            остановить стенд, данные сохранить
   tunnel          открыть туннель SSH к стенду и держать его
+  keys            настроить вход по ключу, чтобы не вводить пароль
   url             напечатать адрес стенда
 
 Переменные окружения:
@@ -434,6 +511,7 @@ case "${1:-deploy}" in
     reset)           cmd_reset ;;
     down)            cmd_down ;;
     tunnel)          cmd_tunnel ;;
+    keys)            cmd_keys ;;
     url)             cmd_url ;;
     -h|--help|help)  usage ;;
     *)               usage; die "неизвестная команда: $1" ;;

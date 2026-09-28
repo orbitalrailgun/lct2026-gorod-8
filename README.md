@@ -205,10 +205,19 @@ deploy/remote.sh tunnel       # держит туннель, Ctrl+C заверш
 | `deploy/remote.sh logs 100` | последние строки журнала |
 | `deploy/remote.sh reset` | вернуть исходный набор вердиктов |
 | `deploy/remote.sh tunnel` | туннель SSH к стенду |
+| `deploy/remote.sh keys` | настроить вход по ключу |
 | `deploy/remote.sh down` | остановить стенд, данные сохранить |
 
 Порт задаётся через `CONCORDE_APP_PORT`, ключ SSH — через
 `CONCORDE_SSH_OPTS="-i ~/.ssh/stand"`. Полный список — `deploy/remote.sh help`.
+
+**Про пароль.** Скрипт открывает одно соединение на весь запуск
+и переиспользует его, поэтому при входе по паролю тот спрашивается
+один раз, а не на каждую операцию. Чтобы не вводить его вовсе:
+
+```bash
+CONCORDE_HOST=user@203.0.113.10 deploy/remote.sh keys
+```
 
 Локальный `docker compose up` тоже публикует порт только на `127.0.0.1`:
 интерфейс открывается по `http://localhost:8080`, но из локальной сети
