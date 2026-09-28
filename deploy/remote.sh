@@ -11,12 +11,19 @@
 # в образ компактным файлом инициализации. Благодаря этому развёртывание
 # занимает минуты, а не часы.
 #
+# По умолчанию стенд слушает только 127.0.0.1 и в сеть не выставлен.
+# Доступ — туннелем SSH (команда tunnel) или через обратный прокси с TLS
+# на той же машине. Открыть порт наружу можно, но только осознанно:
+# CONCORDE_BIND=0.0.0.0.
+#
 # Настройка через переменные окружения:
 #
 #   CONCORDE_HOST       обязательно: user@host удалённой машины
 #   CONCORDE_SSH_PORT   порт SSH, по умолчанию 22
 #   CONCORDE_DIR        каталог на удалённой машине, по умолчанию ~/concorde
-#   CONCORDE_APP_PORT   порт приложения, по умолчанию 8080
+#   CONCORDE_APP_PORT   порт приложения на стенде, по умолчанию 8080
+#   CONCORDE_BIND       адрес привязки, по умолчанию 127.0.0.1 (только петля)
+#   CONCORDE_LOCAL_PORT локальный порт туннеля
 #   CONCORDE_URL_HOST   имя для итоговой ссылки, если оно отличается от адреса SSH
 #   CONCORDE_SSH_OPTS   дополнительные ключи ssh, например -i ~/.ssh/stand
 #
@@ -35,8 +42,21 @@ APP_PORT="${CONCORDE_APP_PORT:-8080}"
 SSH_OPTS="${CONCORDE_SSH_OPTS:-}"
 LOCAL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# Адрес, на котором стенд слушает НА УДАЛЁННОЙ МАШИНЕ. По умолчанию
+# петлевой: сервер с публичным адресом иначе открывает стенд всему
+# интернету вместе со страницей входа, показывающей одноразовый код.
+# Доступ — через туннель SSH (команда tunnel) или обратный прокси.
+BIND_ADDR="${CONCORDE_BIND:-127.0.0.1}"
+
+# Порт на вашей машине, куда пробрасывается туннель.
+LOCAL_PORT="${CONCORDE_LOCAL_PORT:-$APP_PORT}"
+
 URL_HOST="${CONCORDE_URL_HOST:-${HOST#*@}}"
 PUBLIC_URL="http://${URL_HOST}:${APP_PORT}"
+TUNNEL_URL="http://localhost:${LOCAL_PORT}"
+
+# Слушает ли стенд только петлю.
+is_loopback() { [ "$BIND_ADDR" = "127.0.0.1" ] || [ "$BIND_ADDR" = "localhost" ]; }
 
 # ------------------------------------------------------------------ вывод
 
@@ -64,10 +84,22 @@ remote_raw() {
 
 # Docker Compose бывает как плагином (docker compose), так и отдельной
 # программой (docker-compose). Определяем один раз и дальше не думаем.
+COMPOSE=""
+
 compose_cmd() {
-    remote_raw "if docker compose version >/dev/null 2>&1; then echo 'docker compose';
-                elif command -v docker-compose >/dev/null 2>&1; then echo 'docker-compose';
-                else echo ''; fi"
+    if [ -z "$COMPOSE" ]; then
+        COMPOSE="$(remote_raw "if docker compose version >/dev/null 2>&1; then echo 'docker compose';
+                    elif command -v docker-compose >/dev/null 2>&1; then echo 'docker-compose';
+                    else echo ''; fi")"
+    fi
+    printf '%s' "$COMPOSE"
+}
+
+# Адрес привязки и порт передаются команде, а не хранятся в .env:
+# так их можно менять между развёртываниями, не рискуя рассинхронизировать
+# файл с секретами, который на стенде не перезаписывается.
+compose_run() {
+    remote "BIND_ADDR='$BIND_ADDR' APP_PORT='$APP_PORT' $(compose_cmd) $*"
 }
 
 # ----------------------------------------------------------------- проверки
@@ -176,7 +208,6 @@ ensure_secrets() {
         echo '# Пароль базы менять нельзя: он зафиксирован при создании тома.';
         printf 'POSTGRES_PASSWORD=%s\n' \"\$(openssl rand -hex 24 2>/dev/null || head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n')\";
         printf 'SESSION_SECRET=%s\n'   \"\$(openssl rand -hex 32 2>/dev/null || head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')\";
-        printf 'APP_PORT=%s\n' '$APP_PORT';
     } > .env && chmod 600 .env"
     info "Создан .env со случайным паролем базы и секретом сессий"
 }
@@ -189,24 +220,29 @@ cmd_deploy() {
     sync_sources
     ensure_secrets
 
-    local compose
-    compose="$(compose_cmd)"
-
     say "Сборка образа на стенде"
     info "первая сборка занимает несколько минут: ставятся зависимости"
-    remote "$compose build"
+    compose_run build
 
     say "Запуск"
-    remote "$compose up -d"
+    if is_loopback; then
+        info "стенд слушает только 127.0.0.1 — снаружи он недоступен"
+    else
+        warn "стенд слушает на $BIND_ADDR: порт будет открыт в сеть"
+    fi
+    compose_run up -d
 
     wait_for_health
     print_summary
 }
 
-# Готовность проверяется с двух сторон, и достаточно любой.
-# Изнутри машины — обычный случай. Снаружи — тот, когда порт опубликован
-# не на петлевом интерфейсе: так бывает при нестандартной сети docker
-# и при развёртывании в контейнер.
+# Готовность проверяется с двух сторон, и для признания стенда живым
+# достаточно любой. Изнутри машины — обычный случай; снаружи — запасной,
+# он выручает, если на сервере нет curl или порт опубликован не на петле.
+#
+# А вот выводы из двух проверок разные. При петлевой привязке недоступность
+# снаружи — не ошибка, а сам смысл настройки; доступность же означает,
+# что порт кто-то открыл помимо нас. При открытой привязке всё наоборот.
 health_inside()  { remote "curl -fsS http://localhost:$APP_PORT/api/health >/dev/null 2>&1"; }
 health_outside() { curl -fsS -m 10 "$PUBLIC_URL/api/health" >/dev/null 2>&1; }
 
@@ -214,23 +250,32 @@ wait_for_health() {
     say "Ожидание готовности"
     local attempt=0 inside=no outside=no
     while [ "$attempt" -lt 60 ]; do
-        if health_inside; then inside=yes; fi
+        if health_inside;  then inside=yes;  fi
         if health_outside; then outside=yes; fi
-        [ "$inside" = yes ] || [ "$outside" = yes ] && break
+        if [ "$inside" = yes ] || [ "$outside" = yes ]; then break; fi
         attempt=$((attempt + 1))
         sleep 2
     done
 
     if [ "$inside" = no ] && [ "$outside" = no ]; then
         warn "сервис не ответил за две минуты, последние строки журнала:"
-        remote "$(compose_cmd) logs --tail 30 app" || true
+        compose_run logs --tail 30 app || true
         die "стенд не поднялся"
     fi
+    info "сервис отвечает"
 
-    [ "$inside" = yes ] && info "изнутри машины сервис отвечает"
+    if is_loopback; then
+        if [ "$outside" = yes ]; then
+            warn "стенд отвечает снаружи, хотя должен слушать только петлю."
+            warn "Проверьте, не публикует ли порт что-то ещё: прокси, iptables,"
+            warn "или сам docker в нестандартной сетевой настройке."
+        else
+            info "снаружи закрыт — как и задумано"
+        fi
+        return
+    fi
 
-    # Проверяем внешнюю доступность ещё раз: она могла появиться позже.
-    if [ "$outside" = yes ] || health_outside; then
+    if [ "$outside" = yes ]; then
         info "снаружи сервис доступен: $PUBLIC_URL"
     else
         warn "снаружи порт $APP_PORT недоступен."
@@ -243,17 +288,48 @@ wait_for_health() {
 
 print_summary() {
     say "Стенд развёрнут"
-    printf '  Адрес:  \033[1m%s\033[0m\n' "$PUBLIC_URL"
-    info "Проверка: $PUBLIC_URL/api/health"
+
+    if is_loopback; then
+        info "Стенд слушает 127.0.0.1:$APP_PORT на удалённой машине"
+        info "и недоступен из сети. Открыть его можно двумя способами."
+        info ""
+        info "1. Туннель SSH — ничего настраивать не нужно:"
+        printf '     \033[1m%s\033[0m\n' "$(tunnel_command)"
+        info "   затем открыть $TUNNEL_URL"
+        info "   Короткая форма: deploy/remote.sh tunnel"
+        info ""
+        info "2. Обратный прокси с TLS на той же машине — для публичного"
+        info "   доступа на время экспертизы. Прокси ходит на 127.0.0.1:$APP_PORT."
+    else
+        printf '  Адрес:  \033[1m%s\033[0m\n' "$PUBLIC_URL"
+        info "Проверка: $PUBLIC_URL/api/health"
+        warn ""
+        warn "Порт открыт в сеть. Страница входа показывает одноразовый код,"
+        warn "то есть войти может любой, кто знает адрес. Для публичного стенда"
+        warn "это допустимо только на время экспертизы."
+    fi
+
     info ""
     info "Вход: выберите пользователя, раскройте «Код для демонстрации»,"
     info "нажмите «Показать» и введите шестизначный код."
     info "Роли: ods (всё), dispatcher (район), tehnik (просмотр), brigade."
+}
+
+tunnel_command() {
+    local opts="$SSH_OPTS"
+    printf 'ssh -N -L %s:127.0.0.1:%s -p %s %s %s' \
+        "$LOCAL_PORT" "$APP_PORT" "$SSH_PORT" "$opts" "$HOST"
+}
+
+cmd_tunnel() {
+    require_host
+    say "Туннель к стенду"
+    info "Локальный порт $LOCAL_PORT → 127.0.0.1:$APP_PORT на $HOST"
+    info "Откройте $TUNNEL_URL"
+    info "Завершить — Ctrl+C."
     info ""
-    warn "Стенд работает по HTTP и открыт любому, кто знает адрес:"
-    warn "одноразовый код показывается прямо на странице входа."
-    warn "Это сделано намеренно для проверяющих. Для долгой работы"
-    warn "поставьте обратный прокси с TLS и уберите блок подсказки."
+    # shellcheck disable=SC2086
+    exec ssh -N -L "$LOCAL_PORT:127.0.0.1:$APP_PORT" -p "$SSH_PORT" $SSH_OPTS "$HOST"
 }
 
 # ------------------------------------------------------------ эксплуатация
@@ -261,7 +337,7 @@ print_summary() {
 cmd_status() {
     require_host
     say "Состояние стенда"
-    remote "$(compose_cmd) ps"
+    compose_run ps
     info ""
     local health
     health="$(remote "curl -fsS http://localhost:$APP_PORT/api/health" 2>/dev/null \
@@ -273,13 +349,13 @@ cmd_status() {
 
 cmd_logs() {
     require_host
-    remote "$(compose_cmd) logs --tail ${1:-80} app"
+    compose_run logs --tail "${1:-80}" app
 }
 
 cmd_restart() {
     require_host
     say "Перезапуск"
-    remote "$(compose_cmd) restart app"
+    compose_run restart app
     wait_for_health
 }
 
@@ -291,24 +367,27 @@ cmd_reset() {
     read -r answer
     [ "$answer" = "y" ] || [ "$answer" = "Y" ] || die "отменено"
 
-    local compose
-    compose="$(compose_cmd)"
-    remote "$compose exec -T db psql -U concorde -c 'TRUNCATE verdict CASCADE;'"
-    remote "$compose exec -T app python -m scripts.06_seed_db"
+    compose_run exec -T db psql -U concorde -c "'TRUNCATE verdict CASCADE;'"
+    compose_run exec -T app python -m scripts.06_seed_db
     info "исходный набор загружен"
 }
 
 cmd_down() {
     require_host
     say "Остановка стенда"
-    remote "$(compose_cmd) down"
+    compose_run down
     info "контейнеры остановлены, данные сохранены"
-    info "для полного удаления данных: $(compose_cmd) down -v"
+    info "для полного удаления данных на стенде: docker compose down -v"
 }
 
 cmd_url() {
     require_host
-    printf '%s\n' "$PUBLIC_URL"
+    if is_loopback; then
+        printf '%s\n' "$TUNNEL_URL"
+        printf 'через туннель: %s\n' "$(tunnel_command)" >&2
+    else
+        printf '%s\n' "$PUBLIC_URL"
+    fi
 }
 
 usage() {
@@ -326,13 +405,17 @@ usage() {
   restart         перезапустить приложение
   reset           вернуть исходный набор вердиктов (спросит подтверждение)
   down            остановить стенд, данные сохранить
+  tunnel          открыть туннель SSH к стенду и держать его
   url             напечатать адрес стенда
 
 Переменные окружения:
   CONCORDE_HOST       user@host удалённой машины (обязательно)
   CONCORDE_SSH_PORT   порт SSH, по умолчанию 22
   CONCORDE_DIR        каталог на стенде, по умолчанию concorde
-  CONCORDE_APP_PORT   порт приложения, по умолчанию 8080
+  CONCORDE_APP_PORT   порт приложения на стенде, по умолчанию 8080
+  CONCORDE_BIND       адрес привязки на стенде, по умолчанию 127.0.0.1;
+                      0.0.0.0 открывает порт в сеть — задавайте осознанно
+  CONCORDE_LOCAL_PORT локальный порт туннеля, по умолчанию равен порту стенда
   CONCORDE_URL_HOST   имя для ссылки, если отличается от адреса SSH
   CONCORDE_SSH_OPTS   дополнительные ключи ssh, например: -i ~/.ssh/stand
 
@@ -350,6 +433,7 @@ case "${1:-deploy}" in
     restart)         cmd_restart ;;
     reset)           cmd_reset ;;
     down)            cmd_down ;;
+    tunnel)          cmd_tunnel ;;
     url)             cmd_url ;;
     -h|--help|help)  usage ;;
     *)               usage; die "неизвестная команда: $1" ;;
