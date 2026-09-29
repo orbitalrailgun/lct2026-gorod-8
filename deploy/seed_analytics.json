@@ -3,7 +3,9 @@
   {
    "label": "24 часа",
    "hours": 24,
-   "best_precision": 0.18,
+   "precision_at_50": 0.18,
+   "precision_at_100": 0.14,
+   "best_precision": 0.2857142857142857,
    "positives": 2401,
    "base_rate": 0.0005311579087554335,
    "target_met": false
@@ -11,7 +13,9 @@
   {
    "label": "3 суток",
    "hours": 72,
-   "best_precision": 0.171875,
+   "precision_at_50": 0.14,
+   "precision_at_100": 0.14,
+   "best_precision": 0.17647058823529413,
    "positives": 6647,
    "base_rate": 0.0014704733942096488,
    "target_met": false
@@ -19,50 +23,54 @@
   {
    "label": "7 суток",
    "hours": 168,
-   "best_precision": 0.18518518518518517,
+   "precision_at_50": 0.12,
+   "precision_at_100": 0.09,
+   "best_precision": 1.0,
    "positives": 14645,
    "base_rate": 0.003239819897427457,
-   "target_met": false
+   "target_met": true
   },
   {
    "label": "14 суток",
    "hours": 336,
-   "best_precision": 0.7333333333333333,
+   "precision_at_50": 0.48,
+   "precision_at_100": 0.3,
+   "best_precision": 0.52,
    "positives": 27906,
    "base_rate": 0.006173466306426126,
-   "target_met": true
+   "target_met": false
   }
  ],
  "recall": [
   {
    "recall": 0.1,
-   "alerts": 7880,
-   "precision": 0.030583756345177664,
-   "alerts_per_day": 14.405850091407679
+   "alerts": 7569,
+   "precision": 0.03184040163826133,
+   "alerts_per_day": 13.837294332723948
   },
   {
    "recall": 0.2,
-   "alerts": 65860,
-   "precision": 0.007303370786516854,
-   "alerts_per_day": 120.40219378427788
+   "alerts": 58712,
+   "precision": 0.008192533042648862,
+   "alerts_per_day": 107.3345521023766
   },
   {
    "recall": 0.3,
-   "alerts": 136955,
-   "precision": 0.005264502938921544,
-   "alerts_per_day": 250.37477148080438
+   "alerts": 136488,
+   "precision": 0.0052825156790340545,
+   "alerts_per_day": 249.52102376599635
   },
   {
    "recall": 0.5,
-   "alerts": 390105,
-   "precision": 0.003078658309942195,
-   "alerts_per_day": 713.1718464351005
+   "alerts": 377030,
+   "precision": 0.003185422910643715,
+   "alerts_per_day": 689.2687385740402
   },
   {
    "recall": 0.7,
-   "alerts": 967519,
-   "precision": 0.0017374335801157393,
-   "alerts_per_day": 1768.7733089579524
+   "alerts": 970502,
+   "precision": 0.0017320932878036315,
+   "alerts_per_day": 1774.2266910420476
   }
  ],
  "observability": {

@@ -51,6 +51,12 @@ def horizon_rows():
         rows.append({
             "label": HORIZON_LABELS.get(hours, f"{hours} ч"),
             "hours": hours,
+            # Плотность головы очереди — то, что реально означает качество
+            # для смены. «Максимальная точность на кривой» оставлена рядом
+            # для полноты, но на диаграмму не выводится: она достигается
+            # на единицах предупреждений и ни о чём не говорит.
+            "precision_at_50": item["precision@50"],
+            "precision_at_100": item["precision@100"],
             "best_precision": item["best_precision"],
             "positives": item["positives"],
             "base_rate": item["base_rate"],

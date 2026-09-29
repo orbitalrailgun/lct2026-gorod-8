@@ -19,7 +19,7 @@ import pandas as pd
 from core import calendar_risk, config, explain, plural, temperature
 from core.features import FEATURES, FEATURE_NAMES
 
-MODEL_VERSION = "m1-failure-v1"
+MODEL_VERSION = "m1-failure-v2"
 
 
 def load_model(path=None):
