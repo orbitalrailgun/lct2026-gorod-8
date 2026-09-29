@@ -52,15 +52,22 @@ def load_split(con, neg_per_pos=100, seed=42):
     want_neg = min(int(n_pos) * neg_per_pos, int(n_neg))
     rate = want_neg / float(n_neg)
 
+    # Порядок строк задаётся явно, и это не косметика. DuckDB читает
+    # параллельно и порядок между прогонами не сохраняет, а лес берёт
+    # бутстрап-выборки в порядке поступления строк — то есть одно и то же
+    # обучение давало разные модели. Измерено: два прогона с одним и тем же
+    # случайным зерном дали precision@100 0,16 и 0,09.
     train = con.execute(f"""
         SELECT channel_id, d, y, {cols} FROM features
         WHERE d BETWEEN DATE '{TRAIN_FROM}' AND DATE '{TRAIN_TO}'
           AND (y = 1 OR hash(channel_id * 100000 + epoch(d)::BIGINT) %% 1000000
                         < {int(rate * 1000000)})
+        ORDER BY channel_id, d
     """.replace("%%", "%")).df()
     test = con.execute(f"""
         SELECT channel_id, d, y, {cols} FROM features
         WHERE d BETWEEN DATE '{TEST_FROM}' AND DATE '{TEST_TO}'
+        ORDER BY channel_id, d
     """).df()
     return train, test
 
