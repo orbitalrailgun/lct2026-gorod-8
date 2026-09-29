@@ -5,6 +5,11 @@
 и правится без редактора; PDF собирается из него одной командой, поэтому
 расхождение между исходником и поставляемым файлом невозможно.
 
+Собираются все документы каталога `docs`. Четыре поставляемых имеют
+собственные имена файлов — на них ссылаются README и пакет сдачи;
+остальные получают имя исходника. Список нигде не ведётся: новый файл
+`docs/NN-название.md` попадает в сборку сам.
+
 Вёрстка через WeasyPrint: он умеет колонтитулы, нумерацию страниц
 и оглавление со ссылками на номера страниц (CSS target-counter), чего
 не даёт печать из браузера.
@@ -21,6 +26,7 @@
     python -m scripts.07_build_docs
 """
 
+import glob
 import os
 import re
 import sys
@@ -34,36 +40,45 @@ from core import config
 # только исходник, имя файла и титул. Заводить второй скрипт ради
 # титульной страницы значило бы развести оформление двух документов,
 # которые заказчик получит в одном пакете.
-DOCUMENTS = {
-    "записка": {
-        "source": "13-пояснительная-записка.md",
-        "target": "пояснительная-записка.pdf",
-        "kicker": "Сопроводительная документация",
-        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
-        "running": "Дискреция творца · задача №8 «Город»",
-    },
-    "руководство": {
-        "source": "14-руководство-пользователя.md",
-        "target": "руководство-пользователя.pdf",
-        "kicker": "Руководство пользователя",
-        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
-        "running": "Руководство пользователя · задача №8 «Город»",
-    },
-    "развёртывание": {
-        "source": "15-развёртывание.md",
-        "target": "инструкция-по-развёртыванию.pdf",
-        "kicker": "Инструкция по развёртыванию",
-        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
-        "running": "Развёртывание · задача №8 «Город»",
-    },
-    "обучение": {
-        "source": "16-обучение-модели.md",
-        "target": "инструкция-по-обучению-модели.pdf",
-        "kicker": "Инструкция по обучению модели",
-        "title": "Сервис прогнозирования инцидентов<br>в инженерных коллекторах",
-        "running": "Обучение модели · задача №8 «Город»",
-    },
+# Поставляемые документы: у них собственные имена файлов, потому что
+# на них ссылается README и ведут ссылки пакета сдачи. Остальные
+# документы каталога собираются автоматически под именем исходника.
+NAMED = {
+    "13-пояснительная-записка.md": ("пояснительная-записка.pdf",
+                                    "Сопроводительная документация"),
+    "14-руководство-пользователя.md": ("руководство-пользователя.pdf",
+                                       "Руководство пользователя"),
+    "15-развёртывание.md": ("инструкция-по-развёртыванию.pdf",
+                            "Инструкция по развёртыванию"),
+    "16-обучение-модели.md": ("инструкция-по-обучению-модели.pdf",
+                              "Инструкция по обучению модели"),
 }
+
+TITLE = "Сервис прогнозирования инцидентов<br>в инженерных коллекторах"
+
+# Значки состояния из markdown в PDF не переносятся: шрифты семейства
+# Paratype их не содержат, и на странице вместо значка получается пустой
+# прямоугольник. Смысл они не несут — рядом всегда стоит слово, поэтому
+# при сборке просто убираются.
+MARKS = re.compile(r"[\u2705\u274c\u26a0\u26aa\u2713\U0001f534\U0001f7e1"
+                   r"\U0001f7e2\U0001f6e0\U0001f4ca\ufe0f]\s*")
+
+# Надстрочные и подстрочные знаки шрифты Paratype тоже не содержат, и
+# WeasyPrint тянет за ними первый попавшийся шрифт системы — японский
+# Hiragino и корейский AppleMyungjo. Три символа «4,44·10⁻¹⁶» раздували
+# записку с 365 КБ до 3 МБ. Поэтому они переводятся в настоящую
+# типографскую надстрочность: рисуется теми же PT-шрифтами, весит ноль.
+SUPERSCRIPT = str.maketrans("⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹", "-+0123456789")
+SUBSCRIPT = str.maketrans("₋₊₀₁₂₃₄₅₆₇₈₉", "-+0123456789")
+SUPER_RUN = re.compile(r"[⁻⁺⁰¹²³⁴⁵⁶⁷⁸⁹]+")
+SUB_RUN = re.compile(r"[₋₊₀₁₂₃₄₅₆₇₈₉]+")
+
+
+def as_script(text):
+    """Перевод надстрочных и подстрочных знаков в разметку."""
+    text = SUPER_RUN.sub(lambda m: f"<sup>{m.group(0).translate(SUPERSCRIPT)}</sup>",
+                         text)
+    return SUB_RUN.sub(lambda m: f"<sub>{m.group(0).translate(SUBSCRIPT)}</sub>", text)
 
 CSS = """
 @page {
@@ -145,6 +160,7 @@ blockquote { margin: 7pt 0 9pt 0; padding: 4pt 0 4pt 8pt;
 blockquote p { text-align: left; margin-bottom: 3pt; }
 
 hr { border: none; border-top: 0.5pt solid #e2e8f0; margin: 10pt 0; }
+sup, sub { font-size: 0.68em; line-height: 0; }
 strong { color: #0f172a; }
 ul, ol { margin: 0 0 7pt 0; padding-left: 6mm; }
 li { margin-bottom: 2pt; }
@@ -175,6 +191,32 @@ def split_source(text):
     return parts[0], parts[1]
 
 
+def first_heading(text):
+    """Заголовок первого уровня — он же название документа на титуле."""
+    match = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+    return match.group(1).strip() if match else "Документ"
+
+
+def documents():
+    """Все документы каталога docs: имя файла, исходник, надзаголовок.
+
+    Рабочие документы пронумерованы, поэтому отбираются по номеру:
+    так в сборку не попадают случайные заметки.
+    """
+    found = []
+    for source in sorted(glob.glob(os.path.join(config.ROOT, "docs", "[0-9][0-9]-*.md"))):
+        name = os.path.basename(source)
+        if name in NAMED:
+            target, kicker = NAMED[name]
+        else:
+            target = name[:-3] + ".pdf"
+            with open(source, encoding="utf-8") as fh:
+                kicker = first_heading(fh.read())
+        found.append({"name": name, "source": source, "target": target,
+                      "kicker": kicker})
+    return found
+
+
 def build_html(body_md, spec):
     md = markdown.Markdown(extensions=["tables", "fenced_code", "toc",
                                        "attr_list", "sane_lists"],
@@ -184,36 +226,49 @@ def build_html(body_md, spec):
     body_html = body_html.replace('<div class="toc">',
                                   '<div class="toc-title">Содержание</div>'
                                   '<div class="toc">', 1)
-    css = CSS.replace("__RUNNING__", spec["running"])
-    cover = COVER.replace("__KICKER__", spec["kicker"]) \
-                 .replace("__TITLE__", spec["title"])
+    running = f"{spec['kicker']} · задача №8 «Город»"
+    css = CSS.replace("__RUNNING__", running)
+    cover = COVER.replace("__KICKER__", spec["kicker"]).replace("__TITLE__", TITLE)
     return (f"<!doctype html><html lang='ru'><head><meta charset='utf-8'>"
             f"<title>{spec['kicker']} — Дискреция творца</title>"
             f"<style>{css}</style></head><body>{cover}{body_html}</body></html>")
 
 
-def build(name, spec):
-    source = os.path.join(config.ROOT, "docs", spec["source"])
-    target = os.path.join(config.ROOT, "docs", spec["target"])
-    with open(source, encoding="utf-8") as fh:
+def build(spec):
+    with open(spec["source"], encoding="utf-8") as fh:
         text = fh.read()
     _, body = split_source(text)
+
+    # У документов без маркера [TOC] титульного блока нет, и заголовок
+    # первого уровня оказался бы и на обложке, и первой строкой текста.
+    if not text.split("[TOC]", 1)[0].strip().startswith("#") or "[TOC]" not in text:
+        body = re.sub(r"^#\s+.+$", "", body, count=1, flags=re.MULTILINE)
+
+    body = as_script(MARKS.sub("", body))
     # Горизонтальные разделители между разделами в PDF не нужны: разрыв страницы
     # перед каждым разделом делает то же самое, но чище.
     body = re.sub(r"\n---\n", "\n", body)
 
+    target = os.path.join(config.ROOT, "docs", spec["target"])
     HTML(string=build_html(body, spec), base_url=config.ROOT).write_pdf(target)
-    print(f"{name}: {spec['target']}, {os.path.getsize(target) / 1024:.0f} КБ")
+    size = os.path.getsize(target) / 1024
+    return target, size
 
 
 def main():
-    wanted = sys.argv[1:] or list(DOCUMENTS)
-    for name in wanted:
-        spec = DOCUMENTS.get(name)
-        if spec is None:
-            print(f"неизвестный документ: {name}; доступны: {', '.join(DOCUMENTS)}")
+    wanted = [a.lower() for a in sys.argv[1:]]
+    built = 0
+    for spec in documents():
+        if wanted and not any(w in spec["name"].lower() or w in spec["target"].lower()
+                              for w in wanted):
             continue
-        build(name, spec)
+        target, size = build(spec)
+        print(f"  {os.path.basename(target):<44} {size:>6.0f} КБ")
+        built += 1
+    if not built:
+        print("ничего не собрано: проверьте имя документа")
+    else:
+        print(f"\nготово: {built} документов")
 
 
 if __name__ == "__main__":
