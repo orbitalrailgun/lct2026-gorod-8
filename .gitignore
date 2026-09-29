@@ -3,7 +3,7 @@ dataset/
 dataset.zip
 *.csv
 *.7z
-*.zip
+#*.zip
 *.parquet
 *.duckdb
 *.duckdb.wal
