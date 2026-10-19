@@ -245,8 +245,25 @@ def fetch_verdicts(con, status=None, scenario=None, limit=100):
         return [dict(zip(cols, row)) for row in cur.fetchall()]
 
 
+def _real_verdict(verdict_id):
+    """Отсекает вердикты синтетического объекта.
+
+    У синтетики отрицательные идентификаторы: она живёт в файле, а не в базе.
+    Решение диспетчера — единственный источник будущей настоящей разметки,
+    и пускать в него выдуманные события нельзя. Проверка стоит здесь, а не
+    только в интерфейсе: кнопку можно убрать, а слой доступа к данным
+    остаётся последней линией.
+    """
+    if verdict_id is None or int(verdict_id) <= 0:
+        raise ValueError(
+            "вердикт синтетического объекта: квитирование, решение и заявка "
+            "по нему не фиксируются")
+    return int(verdict_id)
+
+
 def acknowledge(con, verdict_id, user_id):
     """Квитирование: вердикт взят в работу и перестаёт мигать в ленте."""
+    verdict_id = _real_verdict(verdict_id)
     with con.cursor() as cur:
         cur.execute(
             "UPDATE verdict SET status = 'в работе', acked_by = %s, acked_at = now() "
@@ -258,6 +275,7 @@ def acknowledge(con, verdict_id, user_id):
 
 def record_decision(con, verdict_id, user_id, action, reason_code, comment=None):
     """Фиксация решения диспетчера — то, из чего со временем вырастет разметка."""
+    verdict_id = _real_verdict(verdict_id)
     with con.cursor() as cur:
         cur.execute("SELECT id FROM reason_ref WHERE code = %s", (reason_code,))
         row = cur.fetchone()
@@ -275,6 +293,8 @@ def record_decision(con, verdict_id, user_id, action, reason_code, comment=None)
 
 def create_work_order(con, draft, user_id=None):
     """Сохраняет черновик заявки и пишет действие в журнал."""
+    if draft.get("verdict_id") is not None:
+        _real_verdict(draft["verdict_id"])
     with con.cursor() as cur:
         cur.execute(
             """INSERT INTO work_order_draft

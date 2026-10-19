@@ -98,8 +98,12 @@ def click_text(driver, text, timeout=TIMEOUT):
     return element
 
 
-def expand(driver, label, appears=None, timeout=TIMEOUT):
+def expand(driver, label, appears=None, timeout=TIMEOUT, index=0):
     """Раскрыть блок по его подписи и дождаться содержимого.
+
+    `index` выбирает блок, когда подпись совпадает у нескольких: на ленте
+    у каждого объекта свой блок «Вердикты объекта». Экспериментальный
+    объект идёт последним, поэтому для него нужен index=-1.
 
     Кликать нужно по строке заголовка блока, а не по текстовому узлу
     с подписью: у Quasar подпись лежит внутри разметки заголовка, и клик
@@ -121,7 +125,7 @@ def expand(driver, label, appears=None, timeout=TIMEOUT):
 
     blocks = wait(driver, matching, timeout,
                   f"не найден раскрывающийся блок {label!r}")
-    header = blocks[0][1]
+    header = blocks[index][1]
     driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", header)
     header.click()
 

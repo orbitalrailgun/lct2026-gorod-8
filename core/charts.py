@@ -335,3 +335,85 @@ def shorten(text, limit=42):
     if len(text) <= limit:
         return text
     return text[:limit - 1].rstrip(" ,;:") + "…"
+
+
+# ------------------------------------------------- повышение точности
+
+def observability_contribution(groups, baseline):
+    """Что держит прогноз: точность при отключении каждой группы источников.
+
+    Столбик — precision@50 модели, когда соответствующая группа признаков
+    недоступна. Чем ниже столбик, тем важнее источник. Линия — исходная
+    точность, чтобы было видно, что отключение окружения её не снижает,
+    а повышает: соседние датчики для прогноза поломки оказались шумом.
+    """
+    labels = [g["подпись"] for g in groups]
+    values = [round(g["precision@50"] * 100, 1) for g in groups]
+    return {
+        "grid": _grid(bottom=28),
+        "tooltip": _tooltip("axis"),
+        "xAxis": _category_axis(labels, rotate=0),
+        "yAxis": _value_axis(formatter="{value} %"),
+        "series": [{
+            "type": "bar",
+            "data": values,
+            "barMaxWidth": 46,
+            "itemStyle": {"color": SERIES, "borderRadius": [4, 4, 0, 0]},
+            "label": {"show": True, "position": "top", "color": INK,
+                      "fontSize": 12, "formatter": "{c} %"},
+            "markLine": {
+                "silent": True, "symbol": "none",
+                "lineStyle": {"color": ACCENT, "width": 1.5},
+                "label": {"formatter": f"со всеми источниками {baseline:.0%}",
+                          "color": ACCENT, "fontSize": FONT,
+                          "position": "insideEndTop"},
+                "data": [{"yAxis": round(baseline * 100, 1)}],
+            },
+        }],
+    }
+
+
+def configuration_curve(rows, series_spec, target=None, target_label=None,
+                        colours=None):
+    """Метрики по конфигурациям оснащения.
+
+    Все ряды в одних единицах — доля в процентах, — поэтому ось одна.
+    Конфигурации идут слева направо от текущего состояния к полному
+    оснащению, и порядок несёт смысл: это и есть кривая дооснащения.
+    """
+    labels = [r["конфигурация"] for r in rows]
+    series = []
+    for index, (name, getter) in enumerate(series_spec):
+        # Цвет следует за сущностью: руководство пользователя обещает,
+        # что цвета сценариев одинаковы на карте, схеме и диаграммах.
+        colour = ((colours or {}).get(name)
+                  or (SERIES, ACCENT, "#4a3aa7")[index % 3])
+        series.append({
+            "name": name,
+            "type": "bar",
+            "data": [round(getter(r) * 100, 1) for r in rows],
+            "barMaxWidth": 22,
+            "itemStyle": {"color": colour, "borderRadius": [3, 3, 0, 0],
+                          "borderColor": SURFACE, "borderWidth": 2},
+            "label": {"show": True, "position": "top", "color": TEXT,
+                      "fontSize": 10, "formatter": "{c}"},
+        })
+    if target is not None:
+        series[0].setdefault("markLine", {
+            "silent": True, "symbol": "none",
+            "lineStyle": {"color": ACCENT, "width": 1.5},
+            "label": {"formatter": target_label or f"цель ТЗ {target:.0%}",
+                      "color": ACCENT, "fontSize": FONT,
+                      "position": "insideEndTop"},
+            "data": [{"yAxis": round(target * 100, 1)}],
+        })
+    return {
+        "grid": _grid(bottom=46),
+        "tooltip": _tooltip("axis"),
+        "legend": {"bottom": 0, "itemWidth": 10, "itemHeight": 10,
+                   "icon": "roundRect",
+                   "textStyle": {"color": TEXT, "fontSize": FONT}},
+        "xAxis": _category_axis(labels, rotate=22),
+        "yAxis": _value_axis(formatter="{value} %", maximum=100),
+        "series": series,
+    }

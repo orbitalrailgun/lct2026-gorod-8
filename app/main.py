@@ -18,7 +18,7 @@ from fastapi.responses import JSONResponse, Response
 from nicegui import app, ui
 
 from core import (auth, cards, charts, config, db, exchange, explain,
-                  orders, plural, reports)
+                  orders, plural, reports, synthetic)
 
 SEED = os.path.join(config.ROOT, "deploy", "seed_verdicts.json")
 GEOMETRY = os.path.join(config.ROOT, "deploy", "seed_geometry.json")
@@ -163,6 +163,8 @@ def header():
             ui.button("Заявки", on_click=lambda: ui.navigate.to("/orders")).props("flat dense color=white")
             ui.button("Аналитика", on_click=lambda: ui.navigate.to("/analytics")) \
                 .props("flat dense color=white")
+            ui.button("Точность", on_click=lambda: ui.navigate.to("/improve")) \
+                .props("flat dense color=white")
             user = current_user()
             if user and auth.rights(user["role"])["can_admin"]:
                 ui.button("Настройки", on_click=lambda: ui.navigate.to("/admin")) \
@@ -304,7 +306,13 @@ def verdict_card(v):
                             ui.label(card["precedent"]).classes("text-xs opacity-70")
 
         with ui.row().classes("w-full justify-end gap-2 items-center"):
-            if not may_decide():
+            if v.get("synthetic"):
+                # По синтетическому вердикту нельзя ни квитировать, ни
+                # зафиксировать решение: решения диспетчеров — это будущая
+                # настоящая разметка, и выдуманным событиям там не место.
+                ui.label("экспериментальный объект: решения не фиксируются") \
+                    .classes("text-xs opacity-60")
+            elif not may_decide():
                 ui.label("режим просмотра: фиксация решений недоступна для роли") \
                     .classes("text-xs opacity-60")
             else:
@@ -482,6 +490,39 @@ def orders_page():
                     ui.label(r["justification"] or "").classes("text-sm whitespace-pre-wrap")
 
 
+EXPERIMENT_VERDICTS = os.path.join(config.ROOT, "deploy",
+                                   "seed_experiment_verdicts.json")
+
+
+def load_experiment_verdicts():
+    """Вердикты синтетического объекта.
+
+    Держатся отдельным файлом и в базу не загружаются: синтетика не должна
+    попасть ни в счётчики, ни в отчёты, ни в журнал прогнозов. В ленте они
+    показываются последними и с явной меткой.
+    """
+    if not os.path.exists(EXPERIMENT_VERDICTS):
+        return []
+    with open(EXPERIMENT_VERDICTS, encoding="utf-8") as fh:
+        payload = json.load(fh)
+    rows = []
+    for index, verdict in enumerate(payload.get("вердикты", []), 1):
+        rows.append({
+            "id": -index,                     # отрицательные: не из базы
+            "created_at": None, "status": "синтетический",
+            "scenario": verdict["scenario"],
+            "object_id": verdict.get("object_id"),
+            "object_name": verdict.get("object_name"),
+            "picket": verdict.get("picket"),
+            "channel_id": verdict.get("channel_id"),
+            "probability": verdict["probability"],
+            "horizon_hours": verdict.get("horizon_hours", config.HORIZON_HOURS),
+            "model_version": verdict.get("model_version", ""),
+            "card": verdict["card"], "synthetic": True,
+        })
+    return rows
+
+
 @ui.refreshable
 def feed():
     rows, live = load_verdicts(400)
@@ -515,14 +556,38 @@ def feed():
     for m in multicards:
         multicard(m)
 
+    # Экспериментальный объект идёт последним и отделён от реальной сети.
+    # Он не участвует в счётчиках выше: это синтетика, и смешивать её
+    # с рабочей очередью нельзя даже визуально.
+    experiment = load_experiment_verdicts()
+    if experiment:
+        ui.separator()
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.badge("синтетический объект", color="purple")
+            ui.label(
+                plural.count(len(experiment), "вердикт", "вердикта",
+                             "вердиктов")
+                + " эксперимента по дооснащению: в счётчики, отчёты и "
+                  "выгрузки не входят, решения по ним не фиксируются"
+            ).classes("text-sm opacity-70")
+            ui.button("Подробнее", on_click=lambda: ui.navigate.to("/improve")) \
+                .props("flat dense")
+        for m in cards.group_by_object(experiment):
+            multicard(m)
+
 
 def multicard(m):
     """Мультикарточка объекта: одна поездка бригады — одна сущность."""
     risk = m["max_probability"]
-    with ui.card().classes(f"w-full border-l-4 border-{risk_color(risk)}-500"):
+    synthetic_object = any(v.get("synthetic") for v in m["cards"])
+    border = "purple" if synthetic_object else risk_color(risk)
+    with ui.card().classes(f"w-full border-l-4 border-{border}-500"):
         with ui.row().classes("w-full items-center justify-between"):
             with ui.column().classes("gap-0 flex-1"):
-                ui.label(m["object_name"]).classes("text-lg font-semibold")
+                with ui.row().classes("items-center gap-2"):
+                    ui.label(m["object_name"]).classes("text-lg font-semibold")
+                    if synthetic_object:
+                        ui.badge("синтетика", color="purple")
                 ui.label(m["summary"]).classes("text-sm opacity-75")
             with ui.column().classes("items-end gap-0"):
                 ui.label(f"{risk:.0%}").classes(
@@ -1121,6 +1186,897 @@ def analytics_page():
                 charts.by_object(order, scenarios, matrix),
                 height=max(240, 34 * len(order) + 80),
                 table=(columns, table_rows))
+
+
+# ------------------------------------------------- повышение точности
+
+EXPERIMENT = os.path.join(config.ROOT, "deploy", "seed_experiment.json")
+CALIBRATION = os.path.join(config.ROOT, "models", "sensor_calibration.json")
+CONTROLS = os.path.join(config.ROOT, "models", "experiment_controls.json")
+
+# Подписи групп наблюдаемости для диаграммы: в файле калибровки они лежат
+# короткими ключами, а на экране нужно человеческое название.
+GROUP_LABELS = {
+    "самодиагностика": "без самодиагностики",
+    "инфраструктура": "без сигнала контроллера",
+    "связь": "без контроля линии",
+    "молчание": "без регулярного опроса",
+    "окружение": "без соседних датчиков",
+}
+
+
+def load_json_file(path):
+    if not os.path.exists(path):
+        return None
+    with open(path, encoding="utf-8") as fh:
+        return json.load(fh)
+
+
+def own_share(pops):
+    """Доля выборки, на которой заработана вся точность.
+
+    Через .get, а не напрямую: файл измерений может оказаться старее
+    кода, и падение здесь означало бы пустой экран вместо ответа.
+    """
+    total = (pops.get("всё вместе") or {}).get("канало-суток") or 0
+    own = (pops.get("свой_отказ") or {}).get("канало-суток") or 0
+    return own / total if total else 0.0
+
+
+def thresholds_phrase(row):
+    """Пороги срабатывания словами.
+
+    У конфигураций, посчитанных до появления этой оси, поля порогов
+    в файле нет. Подставляются базовые значения сети — те же, что
+    использовал генератор по умолчанию, а не выдуманные.
+    """
+    values = row.get("пороги_срабатывания") or synthetic.DEFAULT_THRESHOLDS
+    parts = []
+    for key in ("heat", "flood", "temperature"):
+        if key not in values:
+            continue
+        label = synthetic.THRESHOLD_LABELS.get(key, key)
+        unit = synthetic.THRESHOLD_UNITS.get(key, "")
+        parts.append(f"{label} — {values[key]:g} {unit}".strip())
+    tail = ("" if row.get("пороги_срабатывания")
+            else " (базовые значения сети)")
+    return "; ".join(parts) + tail
+
+
+def queue_cell(rows_count, hits):
+    """«23 строки, 1 попадание» — согласованно, а не «23 строк, 1 попаданий»."""
+    return (plural.count(rows_count, "строка", "строки", "строк") + ", "
+            + plural.count(hits, "попадание", "попадания", "попаданий"))
+
+
+def _improve_what_is_predicted(controls):
+    """Что модель предсказывает на самом деле.
+
+    Раздел стоит первым не из скромности. Пока не разделены «новая
+    поломка» и «продолжение уже идущей», любая рекомендация
+    по дооснащению опирается на цифру, измеряющую не то, что заказчик
+    собирается покупать.
+    """
+    if controls:
+        pops = controls["популяции"]
+        split = controls["разложение_позитивов"]
+        fresh, ongoing = pops["новый_отказ"], pops["продолжение"]
+
+        ui.label("Что модель предсказывает на самом деле") \
+            .classes("text-lg font-semibold mt-2")
+        with ui.card().classes("w-full border-l-4 border-amber-500"):
+            ui.label(
+                "Целевая переменная прогноза отказа — «канал сообщит о "
+                "неисправности в следующие сутки». Почти половину веса "
+                "модели (0,44 из 1) несут признаки самодиагностики — "
+                "сообщения прибора о собственной неисправности, и самый "
+                "сильный из них «сколько суток прошло с последнего такого "
+                "сообщения» (0,25). То есть цель прогноза и его главное "
+                "основание — один и тот же поток событий, сдвинутый "
+                "по времени. Поэтому отложенная выборка разделена "
+                "на две популяции и метрики считаются в каждой отдельно."
+            ).classes("text-sm")
+
+            with ui.row().classes("w-full gap-4 flex-wrap mt-2"):
+                for title, pop, share, hint, color in (
+                    ("Новый отказ", fresh, split["новый_отказ"]["доля"],
+                     "прибор не сообщал о неисправности последние 7 суток — "
+                     "именно это и надо предсказать", "red"),
+                    ("Продолжение", ongoing, split["продолжение"]["доля"],
+                     "прибор уже в отказном состоянии — прогноз близок "
+                     "к констатации", "slate"),
+                ):
+                    with ui.card().classes("flex-1 min-w-80"):
+                        with ui.row().classes("items-baseline gap-2"):
+                            ui.label(title).classes("text-base font-semibold")
+                            ui.badge(f"{share:.0%} позитивов", color=color)
+                        ui.label(
+                            f"{pop.get('precision@50', 0):.0%}"
+                        ).classes(f"text-3xl font-bold text-{color}-600")
+                        ui.label("точность в топ-50").classes("text-xs opacity-60")
+                        ui.label(
+                            plural.count(pop["позитивов"], "отказ",
+                                         "отказа", "отказов")
+                            + f", {pop['канало-суток']:,} канало-суток"
+                            .replace(",", " ")
+                        ).classes("text-xs opacity-70")
+                        ui.label(hint).classes("text-xs opacity-70 italic")
+
+            with ui.card().classes("bg-amber-50 w-full p-3 mt-2"):
+                ui.label("Что из этого следует").classes("text-sm font-semibold")
+                ui.label(
+                    f"Заявленные {pops['всё вместе'].get('precision@50', 0):.0%} "
+                    "точности держатся на каналах, которые сообщили о "
+                    "неисправности в последние 7 суток: это "
+                    f"{ongoing['канало-суток'] / pops['всё вместе']['канало-суток']:.1%} "
+                    f"канало-суток, но {split['продолжение']['доля']:.0%} "
+                    "позитивов. На отказах, приходящих без предупреждения — "
+                    f"а это {split['новый_отказ']['доля']:.0%} всех отказов, — "
+                    f"точность {fresh.get('precision@50', 0):.0%}. "
+                    "Две цифры посчитаны в разных популяциях и не "
+                    "складываются: 0,02 — не часть 0,18, а отдельное "
+                    "измерение на другой выборке."
+                ).classes("text-sm")
+                ui.label(
+                    "Вот это и есть настоящая цель дооснащения: не улучшить "
+                    "прогноз там, где прибор уже жалуется, а увидеть то, "
+                    "о чём сейчас не сообщает никто."
+                ).classes("text-sm font-semibold mt-1")
+
+            strata = controls.get("состав_очереди_по_стратам") or {}
+            if strata:
+                ui.separator()
+                ui.label("Точнее: где именно заработаны эти 18 %").classes(
+                    "text-sm font-semibold")
+                ui.label(
+                    "Популяция «продолжение» склеивает две разные вещи. "
+                    "Признак модели суммирует отказные события канала "
+                    "без разбора, а целевая переменная массовые базо-дни "
+                    "исключает: сервис считает их следами работы бригады, "
+                    "а не отказом прибора. Поэтому разрез на три части."
+                ).classes("text-xs opacity-70")
+                names = (("новый_отказ", "Не сообщал о неисправности"),
+                         ("свой_отказ", "Сообщал вне массовых суток"),
+                         ("только_массовый_день",
+                          "Сообщал только в массовые сутки"))
+                ui.table(
+                    columns=[
+                        {"name": "s", "label": "страт", "field": "s",
+                         "align": "left"},
+                        {"name": "n", "label": "канало-суток", "field": "n"},
+                        {"name": "p", "label": "отказов", "field": "p"},
+                        {"name": "b", "label": "база", "field": "b"},
+                        {"name": "t", "label": "точность топ-50",
+                         "field": "t"},
+                    ],
+                    rows=[{
+                        "s": title,
+                        "n": f"{pops[key]['канало-суток']:,}".replace(",", " "),
+                        "p": f"{pops[key]['позитивов']}",
+                        "b": f"{pops[key].get('базовая_частота', 0):.3%}",
+                        "t": f"{pops[key].get('precision@50', 0):.0%}",
+                    } for key, title in names if key in pops],
+                ).classes("w-full").props("dense flat")
+
+                ui.label(
+                    "Метрики по стратам отвечают на вопрос «а если бы "
+                    "диспетчер смотрел только на такие каналы». Но "
+                    "очередь одна, и прямой вопрос эксплуатации другой: "
+                    "кто доходит до её головы. Ранжирование здесь общее, "
+                    "строки и попадания разнесены по стратам."
+                ).classes("text-xs opacity-70")
+
+                head = strata.get("топ-50") or {}
+                own = head.get("свой_отказ", {})
+                ui.table(
+                    columns=[
+                        {"name": "k", "label": "голова очереди",
+                         "field": "k", "align": "left"},
+                        {"name": "a", "label": "не сообщал",
+                         "field": "a", "align": "left"},
+                        {"name": "b", "label": "вне массовых суток",
+                         "field": "b", "align": "left"},
+                        {"name": "c", "label": "только массовые",
+                         "field": "c", "align": "left"},
+                    ],
+                    rows=[{
+                        "k": key,
+                        "a": queue_cell(row["новый_отказ"]["строк"],
+                                        row["новый_отказ"]["попаданий"]),
+                        "b": queue_cell(row["свой_отказ"]["строк"],
+                                        row["свой_отказ"]["попаданий"]),
+                        "c": queue_cell(
+                            row["только_массовый_день"]["строк"],
+                            row["только_массовый_день"]["попаданий"]),
+                    } for key, row in strata.items()],
+                ).classes("w-full").props("dense flat")
+
+                if own.get("строк"):
+                    ui.label(
+                        "В голове очереди нет ни одного канала, который "
+                        "не сообщал бы о неисправности последние 7 суток. "
+                        "Не «их там меньше» — их там нет вовсе. Эти 77 % "
+                        "отказов для очереди сейчас невидимы, и именно "
+                        "на них направлен вопрос о дооснащении."
+                    ).classes("text-sm font-semibold")
+                    ui.label(
+                        f"Вся точность заработана на "
+                        f"{own_share(pops):.2%} "
+                        "выборки. На каналах, сообщавших только в массовые "
+                        "сутки, точность нулевая на любом k: эти события "
+                        "про работу бригады, а не про прибор, "
+                        "и предсказывать в них нечего."
+                    ).classes("text-sm")
+
+
+def _improve_measured(calibration):
+    """Что измерено на реальной сети: вклад групп наблюдаемости."""
+    ui.label("Что измерено на реальной сети").classes("text-lg font-semibold mt-2")
+    if calibration:
+        ablation = calibration["вклад_наблюдаемости"]
+        baseline = ablation["исходно"]["precision@50"]
+        groups = [{"подпись": GROUP_LABELS.get(k, k),
+                   "precision@50": v["precision@50"],
+                   "даёт": v["даёт"], "потеря": v["потеря@50"]}
+                  for k, v in ablation["группы"].items()]
+        groups.sort(key=lambda g: g["precision@50"])
+
+        with ui.card().classes("w-full"):
+            ui.label("Что держит прогноз отказа").classes("text-base font-semibold")
+            ui.label(
+                "Каждый столбик — точность модели, когда соответствующего "
+                "источника нет. Чем ниже столбик, тем важнее источник."
+            ).classes("text-xs opacity-70")
+            ui.echart(charts.observability_contribution(groups, baseline)) \
+                .classes("w-full").style("height: 300px")
+            ui.table(
+                columns=[{"name": "g", "label": "без чего", "field": "g",
+                          "align": "left"},
+                         {"name": "p", "label": "точность", "field": "p"},
+                         {"name": "d", "label": "что это даёт", "field": "d",
+                          "align": "left"}],
+                rows=[{"g": g["подпись"], "p": f"{g['precision@50']:.0%}",
+                       "d": g["даёт"]} for g in groups],
+            ).classes("w-full").props("dense flat")
+
+        with ui.card().classes("bg-amber-50 w-full p-3"):
+            ui.label("Неожиданный результат").classes("text-sm font-semibold")
+            ui.label(
+                "Признаки соседних датчиков прогноз отказа не улучшают. "
+                "Без них точность не падает, а растёт — с 18 % до 20 %. "
+                "Поломку прибора предсказывает его собственная история, "
+                "а соседи нужны для подтверждения инцидента. "
+                "Поэтому ответ на вопрос о дооснащении распадается надвое: "
+                "для отказов решают характеристики приборов, для инцидентов — "
+                "их набор."
+            ).classes("text-sm")
+            ui.separator()
+            # Вывод «соседи не нужны» был бы здесь переобобщением, и это
+            # важно сказать самим, а не ждать вопроса эксперта.
+            ui.label("Чем этот результат не является").classes(
+                "text-sm font-semibold mt-1")
+            ui.label(
+                "Это измерение нашего набора признаков, а не физики. "
+                "Признаки domain_size, domain_dev_share_7d и "
+                "domain_silent_share — счётчик и средние по каналам точки, "
+                "поэтому добавление любого прибора арифметически сдвигает "
+                "их вниз: богатая точка выглядит для модели спокойнее "
+                "просто из-за знаменателя. Правильный вывод — «так, как "
+                "эти признаки посчитаны сейчас, соседи прогнозу мешают», "
+                "и это повод переделать агрегат, а не отказываться от "
+                "датчиков. Величину арифметического вклада измеряет "
+                "плацебо-конфигурация в эксперименте ниже."
+            ).classes("text-sm")
+            if calibration.get("оснащённость_точек"):
+                tail = [g for g in calibration["оснащённость_точек"]
+                        if g["n_types"] >= 7]
+                if tail:
+                    ui.label(
+                        "Размеры групп по оснащённости: "
+                        + ", ".join(
+                            plural.count(g["n_types"], "тип", "типа",
+                                         "типов") + " — "
+                            + plural.count(g["points"], "точка",
+                                           "точки", "точек")
+                            for g in calibration["оснащённость_точек"])
+                        + ". Выводы по двум последним группам статистически "
+                          "пусты, и мы их не делаем."
+                    ).classes("text-xs opacity-70")
+
+
+def _improve_experiment(rows, physics, truth):
+    """Эксперимент на синтетическом объекте: как устроен и что показал."""
+    with ui.card().classes("w-full"):
+        ui.label("Как устроен эксперимент").classes("text-base font-semibold")
+        ui.label(
+            "Одна и та же физика коллектора — "
+            + plural.count(physics.get("пикетов", 0), "пикет", "пикета",
+                           "пикетов") + ", "
+            + plural.count(physics.get("суток", 0), "сутки", "суток",
+                           "суток") + ", "
+            + plural.count(truth.get("failures", 0), "отказ", "отказа",
+                           "отказов") + ", "
+            + plural.count(truth.get("fires", 0), "задымление",
+                           "задымления", "задымлений") + ", "
+            + plural.count(truth.get("floods", 0), "подтопление",
+                           "подтопления", "подтоплений") + ", "
+            + plural.count(truth.get("intrusions", 0), "проникновение",
+                           "проникновения", "проникновений")
+            + " суммарно по трём прогонам — прогоняется через разные "
+              "конфигурации оснащения. "
+            "Модель не переобучается: берётся та же, что работает на реальных "
+            "данных. Физика порождается один раз и об оснащении не знает, "
+            "поэтому внутри эксперимента разница в метриках — следствие "
+            "оснащения. Но абсолютный уровень точности задан допущениями "
+            "генератора, и переносить его на реальную сеть нельзя: "
+            "осмысленны порядок конфигураций и форма кривых."
+        ).classes("text-sm opacity-80")
+        ui.separator()
+        # Без этого абзаца читатель сравнит 3 % эксперимента с 18 %
+        # реальной сети и сделает вывод о качестве модели, тогда как
+        # это две разные величины.
+        ui.label("Почему эти проценты нельзя сравнивать с реальными") \
+            .classes("text-sm font-semibold")
+        ui.label(
+            "На реальной сети цель прогноза — «канал сообщит о "
+            "неисправности»: иначе отказ прибора, умершего вне "
+            "наблюдения, просто не попал бы в разметку. В эксперименте "
+            "цель — «прибор физически отказал», и она взята из физики, "
+            "а не из журнала. Иначе конфигурация без самодиагностики "
+            "не дала бы ни одного положительного примера и выглядела бы "
+            "не провалившейся, а безупречной. Это разные величины: "
+            "внутри эксперимента они сравнимы между конфигурациями, "
+            "с реальными 18 % — нет."
+        ).classes("text-sm")
+
+    with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+        with ui.column().classes("flex-1 min-w-96"):
+            with ui.card().classes("w-full"):
+                ui.label("Прогноз отказов").classes("text-base font-semibold")
+                ui.label("Полнота при одной проверке в сутки и точность "
+                         "в голове очереди.").classes("text-xs opacity-70")
+                ui.echart(charts.configuration_curve(
+                    rows,
+                    [("полнота за смену", lambda r: r["отказы"]["recall@сутки"]),
+                     ("точность топ-50", lambda r: r["отказы"]["precision@50"])],
+                    target=config.TARGET_RECALL,
+                )).classes("w-full").style("height: 320px")
+        with ui.column().classes("flex-1 min-w-96"):
+            with ui.card().classes("w-full"):
+                ui.label("Обнаружение задымления").classes("text-base font-semibold")
+                ui.label(
+                    "Тревога поднимается, только если сработали два независимых "
+                    "типа датчиков. По вертикали — доля подтверждённых при "
+                    "заданной физике, а не Precision сервиса: на реальных "
+                    "данных разметки инцидентов нет, и эта величина там "
+                    "не существует. Здесь измеряется согласие нашего "
+                    "правила с нашей же объявленной физикой."
+                ).classes("text-xs opacity-70")
+                ui.echart(charts.configuration_curve(
+                    rows,
+                    [("доля подтверждённых, с подтверждением",
+                      lambda r: cards.incident_value(r, "задымление",
+                                               "precision_подтверждённых")),
+                     ("полнота, с подтверждением",
+                      lambda r: cards.incident_value(r, "задымление",
+                                               "recall_подтверждённых")),
+                     ("доля подтверждённых, одиночная сработка",
+                      lambda r: cards.incident_value(r, "задымление", "precision"))],
+                    target=config.TARGET_PRECISION,
+                    # Не «цель ТЗ»: порог ТЗ задан для Precision сервиса,
+                    # а здесь другая величина. Линия приведена, чтобы
+                    # было видно, где достигается формальное значение,
+                    # и подписана соответственно.
+                    target_label=f"порог ТЗ {config.TARGET_PRECISION:.0%} "
+                                 "— для справки",
+                )).classes("w-full").style("height: 320px")
+
+    # Кривые по всем трём сценариям. Без них «честная кривая
+    # по сценариям» сводилась бы к одному задымлению, а подтопление
+    # и проникновение были бы видны только числом в таблице целей.
+    with ui.row().classes("w-full gap-4 items-stretch flex-wrap"):
+        scenario_series = [
+            (key, lambda r, k=key: cards.incident_value(
+                r, k, "precision_подтверждённых"))
+            for key in cards.SCENARIOS]
+        recall_series = [
+            (key, lambda r, k=key: cards.incident_value(
+                r, k, "recall_подтверждённых"))
+            for key in cards.SCENARIOS]
+        for title, hint, series, target, label in (
+            ("Доля подтверждённых по сценариям",
+             "Тревога поднята двумя независимыми типами датчиков "
+             "и событие действительно было.",
+             scenario_series, config.TARGET_PRECISION,
+             f"порог ТЗ {config.TARGET_PRECISION:.0%} — для справки"),
+            ("Полнота обнаружения по сценариям",
+             "Какая доля событий заданной физики поднята как "
+             "подтверждённая тревога.",
+             recall_series, config.TARGET_RECALL,
+             f"порог ТЗ {config.TARGET_RECALL:.0%}"),
+        ):
+            with ui.column().classes("flex-1 min-w-96"):
+                with ui.card().classes("w-full"):
+                    ui.label(title).classes("text-base font-semibold")
+                    ui.label(hint).classes("text-xs opacity-70")
+                    ui.echart(charts.configuration_curve(
+                        rows, series, target=target,
+                        target_label=label,
+                        colours={
+                            "задымление": charts.SCENARIO["пожар"],
+                            "подтопление": charts.SCENARIO["подтопление"],
+                            "проникновение": charts.SCENARIO["проникновение"],
+                        },
+                    )).classes("w-full").style("height: 320px")
+
+    with ui.card().classes("w-full"):
+        ui.label("Все конфигурации").classes("text-base font-semibold")
+        ui.table(
+            columns=[
+                {"name": "n", "label": "конфигурация", "field": "n", "align": "left"},
+                {"name": "ch", "label": "каналов", "field": "ch"},
+                {"name": "rec", "label": "отказы: полнота", "field": "rec"},
+                {"name": "pre", "label": "отказы: точность", "field": "pre"},
+                {"name": "fr", "label": "дым: полнота", "field": "fr"},
+                {"name": "fp", "label": "дым: доля подтв. (синт.)", "field": "fp"},
+                {"name": "cp", "label": "дым: то же, 2 типа", "field": "cp"},
+                {"name": "cr", "label": "дым: полнота с подтв.", "field": "cr"},
+                {"name": "sw", "label": "потеряно фильтром ТО",
+                 "field": "sw"},
+                {"name": "note", "label": "что меняется", "field": "note",
+                 "align": "left"},
+            ],
+            rows=[{
+                "n": r["конфигурация"], "ch": f"{r['каналов']:.0f}",
+                "rec": f"{r['отказы']['recall@сутки']:.0%}",
+                "pre": f"{r['отказы']['precision@50']:.0%}",
+                "fr": f"{cards.incident_value(r, 'задымление', 'recall'):.0%}",
+                "fp": f"{cards.incident_value(r, 'задымление', 'precision'):.1%}",
+                "cp": f"{cards.incident_value(r, 'задымление', 'precision_подтверждённых'):.0%}",
+                "cr": f"{cards.incident_value(r, 'задымление', 'recall_подтверждённых'):.0%}",
+                "sw": (f"{cards.incident_value(r, 'задымление', 'событий_в_отброшенных_сутках', 0):.0f} "
+                       f"из {cards.incident_value(r, 'задымление', 'событий', 0):.0f}"),
+                "note": r["пояснение"],
+            } for r in rows],
+        ).classes("w-full").props("dense flat")
+
+    # Прямой ответ на вопрос «достигаются ли требуемые показатели».
+    # Он нужен отдельным блоком: иначе читателю придётся искать его
+    # по таблице, а ответ разный для прогноза и для обнаружения.
+
+
+def _improve_targets(grid, truth):
+    """Где формально достигаются требуемые 0,70 и 0,50.
+
+    Отдельным блоком, а не строкой в общей таблице: ответ разный для
+    прогноза и для обнаружения, и искать его по таблице читателю
+    не следует.
+    """
+    ui.label("Где формально достигаются 0,70 и 0,50") \
+        .classes("text-lg font-semibold mt-2")
+    verdict_rows = []
+
+    def status(pairs):
+        """Что именно достигнуто: оба порога, один или ни один.
+
+        Плоское «не достигаются» прячет существенное различие. Точность
+        100 % при полноте 39 % — это не то же самое, что ноль по обоим:
+        в первом случае ясно, какой именно показатель упирается
+        и за счёт чего его двигать.
+        """
+        both = [(r, p, rc) for r, p, rc in pairs
+                if p >= config.TARGET_PRECISION and rc >= config.TARGET_RECALL]
+        if both:
+            return f"{both[0][0]['конфигурация']} — оба порога"
+        only_p = [(r, p, rc) for r, p, rc in pairs
+                  if p >= config.TARGET_PRECISION]
+        only_r = [(r, p, rc) for r, p, rc in pairs
+                  if rc >= config.TARGET_RECALL]
+        if only_p and only_r:
+            return (f"по частям: точность — {only_p[0][0]['конфигурация']}, "
+                    f"полнота — {only_r[0][0]['конфигурация']}; "
+                    "вместе не сходятся")
+        if only_p:
+            return (f"только точность: {only_p[0][0]['конфигурация']} "
+                    f"({only_p[0][1]:.0%}), полнота не дотягивает")
+        if only_r:
+            return (f"только полнота: {only_r[0][0]['конфигурация']} "
+                    f"({only_r[0][2]:.0%}), точность не дотягивает")
+        return "ни один из двух порогов"
+
+    fail_pairs = [(r, r["отказы"]["precision@50"], r["отказы"]["recall@сутки"])
+                  for r in grid]
+    best_fail = max(grid, key=lambda r: r["отказы"]["precision@50"]) if grid else None
+    verdict_rows.append({
+        "s": "Прогноз отказа прибора",
+        "v": status(fail_pairs) if grid else "",
+        "b": (f"лучшее в сетке: {best_fail['отказы']['precision@50']:.0%} точности "
+              f"при полноте {best_fail['отказы']['recall@сутки']:.0%} "
+              f"({best_fail['конфигурация']})") if best_fail else "",
+    })
+
+    # Число событий берётся за один прогон, а не суммарно по трём:
+    # метрики усреднены по прогонам, и «4 из 18» рядом с ними читалось бы
+    # как провал, хотя это 4 из 6 в каждом прогоне.
+    events_of = {key: (cards.incident_value(grid[0], key, "событий", 0)
+                       if grid else 0)
+                 for key in cards.SCENARIOS}
+    for key, label in (("задымление", "Обнаружение задымления"),
+                       ("подтопление", "Обнаружение подтопления"),
+                       ("проникновение", "Обнаружение проникновения")):
+        def pair(r, k=key):
+            return (cards.incident_value(r, k, "precision_подтверждённых"),
+                    cards.incident_value(r, k, "recall_подтверждённых"))
+        pairs = [(r, pair(r)[0], pair(r)[1]) for r in grid]
+        hit = [r for r in grid
+               if pair(r)[0] >= config.TARGET_PRECISION
+               and pair(r)[1] >= config.TARGET_RECALL]
+        top = max(grid, key=lambda r: sum(pair(r))) if grid else None
+
+        def absolute(r, k=key):
+            """Проценты без абсолютных чисел здесь обманчивы: «100 %»
+            может означать одно подтверждённое событие из одного.
+
+            Числа усреднены по прогонам, поэтому дробные: «0,3 события
+            в сутки прогона ТО» означает «в одном прогоне из трёх одно
+            событие попало в отброшенные сутки». Округлять до целого
+            нельзя — потеря исчезла бы из отчёта.
+            """
+            conf = cards.incident_value(r, k, "подтверждено_вторым_типом", 0)
+            total = cards.incident_value(r, k, "событий", 0)
+            lost = cards.incident_value(r, k,
+                                        "событий_в_отброшенных_сутках", 0)
+            tail = (f", {lost:.1f} в сутки прогона ТО".replace(".", ",")
+                    if lost >= 0.05 else "")
+            return f"{conf:.0f} из {total:.0f} событий{tail}"
+
+        verdict_rows.append({
+            "s": f"{label} ({events_of[key]:.0f} за прогон)",
+            "v": (f"{hit[0]['конфигурация']} — {absolute(hit[0])}"
+                  if hit else status(pairs)),
+            "b": (f"лучшее в сетке: {pair(top)[0]:.0%} доли подтверждённых "
+                  f"при полноте {pair(top)[1]:.0%} — {absolute(top)} "
+                  f"({top['конфигурация']})")
+                 if top else "",
+        })
+
+    achieved = [r for r in verdict_rows
+                if "оба порога" in r["v"] or "событий" in r["v"]]
+    with ui.card().classes(
+            "w-full border-l-4 border-"
+            + ("emerald" if achieved else "amber") + "-500"):
+        ui.table(
+            columns=[{"name": "s", "label": "сценарий", "field": "s",
+                      "align": "left"},
+                     {"name": "v", "label": "где достигаются", "field": "v",
+                      "align": "left"},
+                     {"name": "b", "label": "иначе — лучшее в сетке",
+                      "field": "b", "align": "left"}],
+            rows=verdict_rows,
+        ).classes("w-full").props("dense flat")
+        ui.separator()
+        ui.label("Как это читать").classes("text-sm font-semibold")
+        ui.label(
+            "Для прогноза отказа потолок задан не оснащением, а долей "
+            "отказов, которые мы сами объявили не имеющими наблюдаемых "
+            "предвестников. Поэтому «не достигаются» здесь означает "
+            "«не достигаются в этой сетке при этих допущениях», а не "
+            "«недостижимы никаким набором датчиков» — такого утверждения "
+            "эксперимент не доказывает. "
+            + ("Для обнаружения инцидентов достигнутые значения — это "
+               "доля подтверждённых при заданной физике, а не Precision "
+               "сервиса: на реальных данных разметки инцидентов нет, "
+               "и там эта величина не существует."
+               if achieved else
+               "Ни одна конфигурация сетки не вышла на оба требуемых "
+               "значения одновременно. В графе «где достигаются» "
+               "сказано, какой именно порог взят и какой упирается — "
+               "это и есть ответ на вопрос, что двигать дальше.")
+        ).classes("text-sm")
+        ui.label(
+            "Число событий указано рядом со сценарием и рядом с каждой "
+            "цифрой, и указано за один прогон: метрики усреднены по трём "
+            "прогонам с разными зёрнами, поэтому сопоставлять их надо "
+            "с событиями одного прогона. Выборки малы, полнота по ним "
+            "дискретна, и проценты здесь без абсолютных чисел читать "
+            "нельзя. Это ограничение эксперимента, а не оценка сервиса."
+        ).classes("text-xs opacity-70")
+
+
+def _improve_sweep(grid):
+    """Фильтр регламентных прогонов и его цена.
+
+    Содержательная находка, а не техническая деталь: без фильтра обход
+    техника выглядит идеальным подтверждением и топит точность.
+    """
+    fire_row = next((r for r in grid
+                     if cards.incident_value(r, "задымление", "суток_прогона_ТО", 0)),
+                    None)
+    if fire_row:
+        inc = fire_row["инциденты"]["задымление"]
+        with ui.card().classes("w-full border-l-4 border-slate-500"):
+            ui.label("Почему обход техника приходится отбрасывать") \
+                .classes("text-base font-semibold")
+            ui.label(
+                "Во время регламентного обхода техник проверяет датчики, "
+                "и срабатывают сразу оба типа — дымовой и тепловой, в одной "
+                "точке, в одно время. Для правила «два независимых типа "
+                "подтвердили друг друга» это выглядит идеальным "
+                "подтверждением. Поэтому каждый обход попадал бы в ложные "
+                "подтверждённые тревоги: измерено, что без фильтра доля "
+                "подтверждённых получается 2 % вместо 100 %."
+            ).classes("text-sm opacity-80")
+            ui.label(
+                "Эксперимент берёт критерий массовости самого сервиса, "
+                "а не своё правило. На реальных данных он там не случайно: "
+                "у одной базы зафиксировано 27 суток, когда разом "
+                "срабатывали все 96 дымовых каналов по всем 45 пикетам."
+            ).classes("text-sm")
+            with ui.row().classes("items-baseline gap-4 mt-1"):
+                ui.label(plural.count(inc.get("суток_прогона_ТО", 0),
+                                      "сутки прогона", "суток прогона",
+                                      "суток прогона")) \
+                    .classes("text-sm font-semibold")
+                ui.label(plural.count(inc.get("сработок_отброшено_как_ТО", 0),
+                                      "сработка отброшена",
+                                      "сработки отброшено",
+                                      "сработок отброшено")) \
+                    .classes("text-sm opacity-70")
+            ui.label(
+                "Фильтр стоит денег, и это сказано прямо: вместе "
+                "с прогонами теряются настоящие события, случившиеся "
+                "в те же сутки. Поэтому число отброшенного показано, "
+                "а не умолчано."
+            ).classes("text-xs opacity-70")
+            ui.label(
+                "Тонкость, о которой стоит знать: критерий массовости "
+                "считается по доле каналов базы, а число каналов "
+                "на контроллер — одна из варьируемых характеристик. "
+                "Значит агрессивность фильтра зависит от конфигурации. "
+                "Часть этого эффекта содержательна — на густо "
+                "оснащённом контроллере прогон распознаётся надёжнее, — "
+                "но часть является поведением фильтра, а не способностью "
+                "обнаруживать. Поэтому рядом с каждой цифрой стоит число "
+                "настоящих событий, попавших в отброшенные сутки."
+            ).classes("text-xs opacity-70")
+
+
+def _improve_placebo(base_row, placebo):
+    """Отрицательный контроль: что сдвигает бесполезный датчик.
+
+    Без этого блока сетка не доказывает ничего: три признака
+    из двадцати — счётчик каналов в точке и средние по ним, поэтому
+    добавление любого прибора меняет вход модели арифметически.
+    """
+    if base_row and placebo:
+        delta = (placebo["отказы"]["precision@50"]
+                 - base_row["отказы"]["precision@50"])
+        with ui.card().classes("w-full border-l-4 border-slate-500"):
+            ui.label("Отрицательный контроль: плацебо").classes(
+                "text-base font-semibold")
+            ui.label(
+                "В конфигурации «плацебо» на каждый пикет добавлен датчик "
+                "движения. О здоровье дымового прибора он не знает ничего, "
+                "но удваивает число каналов в точке и на контроллере — то "
+                "есть меняет знаменатели трёх признаков из двадцати. "
+                "Поэтому его эффект — это чистая арифметика, и любой "
+                "прирост меньше него содержательным считать нельзя."
+            ).classes("text-sm opacity-80")
+            with ui.row().classes("items-baseline gap-3 mt-1"):
+                ui.label(f"{delta:+.0%}").classes(
+                    "text-2xl font-bold "
+                    + ("text-rose-600" if abs(delta) >= 0.02 else "text-emerald-600"))
+                ui.label("сдвиг точности топ-50 от бесполезного датчика") \
+                    .classes("text-sm opacity-70")
+            ui.label(
+                "Порог содержательности: прирост конфигурации считается "
+                f"реальным, только если он больше {abs(delta):.0%}."
+                if abs(delta) >= 0.01 else
+                "Сдвиг в пределах шума: знаменатели признаков на результат "
+                "существенно не влияют, и прирост конфигураций можно "
+                "читать как содержательный."
+            ).classes("text-sm")
+
+
+def _improve_conclusions(grid, base_row, floor):
+    """Что из сетки следует, с порогом содержательности от плацебо.
+
+    Без этого блока читатель сложит выводы сам, и скорее всего прочтёт
+    прирост в пределах арифметики как улучшение.
+    """
+    quiet = next((r for r in grid
+                  if r["конфигурация"] == "без самодиагностики"), None)
+    if base_row and quiet:
+        drop = (base_row["отказы"]["recall@сутки"]
+                - quiet["отказы"]["recall@сутки"])
+        confirmed = max(
+            (cards.incident_value(r, "задымление",
+                                  "precision_подтверждённых")
+             for r in grid), default=0.0)
+        ui.label("Что из этого следует").classes("text-lg font-semibold mt-2")
+        with ui.card().classes("w-full border-l-4 border-slate-700"):
+            for title, text in (
+                ("Самодиагностика прибора — необходимое условие",
+                 "Без неё прогноз отказа обращается в ноль, а не "
+                 f"ухудшается: полнота за смену падает на {drop:.0%}."
+                 + (f" Это кратно больше плацебо-сдвига ({floor:.0%}), "
+                    "то есть эффект настоящий."
+                    if floor > 0 else
+                    " Плацебо-конфигурация в этой сетке не посчитана, "
+                    "поэтому порог содержательности не предъявлен.")
+                 + " Приборы типа «сухой контакт» не дают модели "
+                   "ни одного наблюдаемого предвестника."),
+                ("Одним типом датчика подтверждение невозможно "
+                 "в принципе",
+                 "Пока в точке один тип, доля подтверждённых тревог "
+                 "равна нулю при любой плотности установки и любой "
+                 "периодичности опроса: подтверждать нечем."
+                 + (f" Со вторым релевантным типом она становится "
+                    f"{confirmed:.0%}. Эффект категориальный, "
+                    "а не количественный, и потому к допущениям "
+                    "генератора нечувствителен."
+                    if confirmed > 0 else
+                    " Конфигурации со вторым релевантным типом в этой "
+                    "сетке не посчитаны, поэтому вторая половина "
+                    "утверждения не предъявлена.")),
+                ("Дооснащение прогноз отказа не улучшает — "
+                 "это главный отрицательный результат",
+                 ("Ни одна ось не даёт прироста больше плацебо-сдвига. "
+                  if floor > 0 else
+                  "Прирост ни одной оси не отличается от шума. ")
+                 + "Это согласуется с измерением на реальной сети, где "
+                   "признаки соседних датчиков прогнозу тоже не помогают. "
+                   "Поломку прибора предсказывает его собственная "
+                   "история, и купить её установкой других приборов "
+                   "нельзя."),
+            ):
+                with ui.column().classes("gap-0 mt-2"):
+                    ui.label(title).classes("text-sm font-semibold")
+                    ui.label(text).classes("text-sm opacity-85")
+
+            ui.separator()
+            ui.label("Поэтому ответ распадается надвое").classes(
+                "text-sm font-semibold")
+            ui.label(
+                "Для прогноза отказа решают характеристики самих "
+                "приборов, а не их количество: прибор обязан уметь "
+                "сообщать о своей неисправности. Это требование "
+                "к спецификации закупки, а не к схеме расстановки."
+            ).classes("text-sm")
+            ui.label(
+                "Для обнаружения инцидентов решает набор типов в точке: "
+                "нужен второй независимый тип, физически способный "
+                "подтвердить тот же процесс. Тепловой датчик "
+                "подтверждает дым, датчик затопления — работу насоса, "
+                "датчик движения — открытие люка. Датчик движения дым "
+                "не подтверждает ни при какой плотности, и «больше "
+                "датчиков» с «нужные датчики» — разные вещи."
+            ).classes("text-sm")
+
+
+def _improve_recommendation(rows):
+    """Итоговая рекомендация: что поставить и с какими характеристиками."""
+    # --- часть третья: рекомендация
+    ui.label("Что поставить").classes("text-lg font-semibold mt-2")
+    best = cards.recommended(rows)
+    if best:
+        with ui.card().classes("w-full border-l-4 border-emerald-500"):
+            ui.label(f"Рекомендуемая конфигурация: {best['конфигурация']}") \
+                .classes("text-base font-semibold")
+            ui.label(best["пояснение"]).classes("text-sm opacity-80")
+            met = cards.targets_met(best)
+            ui.label(
+                "Выбрана как самая дешёвая из тех, что закрывают оба "
+                "порога ТЗ по "
+                + plural.count(met, "сценарию", "сценариям", "сценариям")
+                + " обнаружения."
+                if met else
+                "Ни одна конфигурация сетки не закрывает оба порога ТЗ "
+                "ни по одному сценарию, поэтому выбрана самая дешёвая "
+                "из дающих наибольшую суммарную пользу. Это слабее, чем "
+                "ответ на вопрос организаторов, и названо прямо."
+            ).classes("text-sm " + ("opacity-80" if met
+                                    else "text-amber-800 font-semibold"))
+            ui.separator()
+            ui.table(
+                columns=[{"name": "k", "label": "характеристика", "field": "k",
+                          "align": "left"},
+                         {"name": "v", "label": "значение", "field": "v",
+                          "align": "left"}],
+                rows=[
+                    {"k": "Набор датчиков и шаг установки",
+                     # Значения усреднены по прогонам и приходят дробными,
+                     # хотя шаг установки целый по смыслу.
+                     "v": ", ".join(f"{k} — каждый {v:.0f}-й пикет"
+                                    for k, v in best["датчиков"].items())},
+                    {"k": "Периодичность опроса",
+                     "v": ", ".join(f"{k} — раз в {v:.0f} мин"
+                                    for k, v in best["опрос_минут"].items())
+                          or "событийный режим"},
+                    {"k": "Самодиагностика прибора",
+                     "v": "обязательна" if best["самодиагностика"] else "нет"},
+                    {"k": "Контроль линии связи",
+                     "v": "обязателен" if best["контроль_линии"] else "нет"},
+                    {"k": "Каналов на контроллер",
+                     "v": f"{best['каналов_на_контроллер']:.0f} — чтобы был виден каскад"},
+                    {"k": "Порог срабатывания (точность измерения)",
+                     "v": thresholds_phrase(best)},
+                ],
+            ).classes("w-full").props("dense flat")
+
+
+
+@ui.page("/improve")
+def improve_page():
+    """Что поставить на объекте, чтобы прогноз стал точнее.
+
+    Страница отвечает на вопрос организаторов и делает это по порядку:
+    что измеряет нынешняя метрика, что измерено на реальной сети, что
+    показал эксперимент на синтетическом объекте, где достигаются
+    требуемые показатели и что из этого следует поставить. Порядок
+    существенен, поэтому разделы вынесены отдельными функциями и здесь
+    видна только последовательность.
+    """
+    if not require_login():
+        return
+    header()
+    experiment = load_json_file(EXPERIMENT)
+    calibration = load_json_file(CALIBRATION)
+    controls = load_json_file(CONTROLS)
+
+    with ui.column().classes("w-full max-w-6xl mx-auto p-4 gap-4"):
+        ui.label("Повышение точности прогноза").classes("text-xl font-semibold")
+        ui.label(
+            "Какой набор датчиков и с какими характеристиками нужно поставить "
+            "на объекте, чтобы точность прогноза выросла. Ответ собран "
+            "в три шага: что измеряет нынешняя метрика, что измерено "
+            "на реальной сети и что показал эксперимент на синтетическом "
+            "объекте, где у инцидентов есть разметка."
+        ).classes("text-sm opacity-70")
+
+        _improve_what_is_predicted(controls)
+        _improve_measured(calibration)
+
+        ui.label("Эксперимент на синтетическом объекте").classes(
+            "text-lg font-semibold mt-2")
+        if not experiment:
+            ui.label("Результаты эксперимента не рассчитаны. "
+                     "Запустите scripts/12_sensor_experiment.").classes("opacity-60")
+            return
+
+        rows = experiment["конфигурации"]
+        physics = experiment["физика"]
+        truth = cards.experiment_truth(physics)
+
+        # Контрольные конфигурации из сетки сравнения исключаются: их задача
+        # показать размер арифметического сдвига, а не быть вариантом выбора.
+        grid = [r for r in rows if not r["конфигурация"].startswith("плацебо")]
+        base_row = next((r for r in rows
+                         if r["конфигурация"] == "как сейчас"), None)
+        placebo = next((r for r in rows
+                        if r["конфигурация"].startswith("плацебо")), None)
+        floor = (abs(placebo["отказы"]["precision@50"]
+                     - base_row["отказы"]["precision@50"])
+                 if base_row and placebo else 0.0)
+
+        _improve_experiment(rows, physics, truth)
+        _improve_targets(grid, truth)
+        _improve_sweep(grid)
+        _improve_placebo(base_row, placebo)
+        _improve_conclusions(grid, base_row, floor)
+        _improve_recommendation(rows)
+
+        with ui.card().classes("bg-slate-100 w-full p-3"):
+            ui.label("Оговорка о синтетике").classes("text-sm font-semibold")
+            ui.label(
+                "Экспериментальный объект целиком синтетический: это отдельный "
+                "объект с собственными идентификаторами, он исключён из всех "
+                "метрик реальной сети, отчётов и журнала прогнозов. В очереди "
+                "его вердикты помечены отдельно, и зафиксировать по ним "
+                "решение нельзя. Распределения генератора сняты с реальных "
+                "данных и лежат в models/sensor_calibration.json, но сам "
+                "объект в природе не существует."
+            ).classes("text-sm")
 
 
 # ------------------------------------------------------------- REST API

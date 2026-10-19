@@ -12,7 +12,7 @@
 import datetime as dt
 from collections import Counter
 
-from core import plural, timeline
+from core import config, plural, timeline
 
 # Родительный падеж для фразы «отказ датчика ...» — заранее, чтобы не строить
 # морфологию в рантайме и не зависеть от внешних библиотек.
@@ -316,3 +316,86 @@ def blind_spot_summary(items):
                 + " ограничена наблюдаемость — "
                 "подтвердить приборами получится не всё")
     return None
+
+
+def experiment_truth(physics):
+    """Сводка истины объекта, устойчивая к версии файла.
+
+    В образ копируется deploy/seed_experiment.json, и он может оказаться
+    старее кода: в прежней версии суммарная истина звалась «истина» и
+    хранила списки событий, а не их число. Страница из-за этого падать
+    не должна — эксперт увидит пустой экран вместо ответа на вопрос
+    организаторов.
+    """
+    if not physics:
+        return {}
+    if isinstance(physics.get("истина_суммарно"), dict):
+        return physics["истина_суммарно"]
+    raw = physics.get("истина")
+    if isinstance(raw, dict):
+        return {k: (len(v) if isinstance(v, (list, tuple)) else v)
+                for k, v in raw.items()}
+    return {}
+
+
+def incident_value(row, scenario, key, default=0.0):
+    """Метрика инцидента с мягким отказом: ключа может не быть в старом файле."""
+    try:
+        return row["инциденты"][scenario].get(key, default)
+    except (KeyError, TypeError, AttributeError):
+        return default
+
+
+SCENARIOS = ("задымление", "подтопление", "проникновение")
+
+
+def targets_met(row):
+    """По скольким сценариям конфигурация закрывает оба порога ТЗ."""
+    return sum(
+        1 for key in SCENARIOS
+        if incident_value(row, key, "precision_подтверждённых")
+        >= config.TARGET_PRECISION
+        and incident_value(row, key, "recall_подтверждённых")
+        >= config.TARGET_RECALL)
+
+
+def recommended(configurations):
+    """Минимальная конфигурация, закрывающая требуемые показатели.
+
+    Вопрос организаторов звучит так: что нужно поставить, чтобы показатели
+    достигли требуемых. Значит и правило выбора должно быть таким же —
+    сначала число сценариев, где оба порога взяты, и только потом цена.
+    Прежнее правило складывало метрики в один балл и поэтому склонялось
+    к ответу «поставьте всё», который вопроса не решает.
+
+    Если ни одна конфигурация не закрывает ни одного сценария, выбор
+    падает на прежнее правило: суммарная польза при наименьшем числе
+    каналов. Это честнее, чем не ответить вовсе, и такой случай
+    на странице подписан отдельно.
+    """
+    # Отрицательный контроль из выбора исключается: его задача — показать
+    # размер арифметического сдвига, а не быть рекомендацией. Для сценария
+    # проникновения датчик движения релевантен, и без этой строки плацебо
+    # могло бы попасть в рекомендацию по формальному признаку.
+    configurations = [c for c in configurations
+                      if not c["конфигурация"].startswith("плацебо")]
+    if not configurations:
+        return None
+
+    def score(row):
+        failures = row["отказы"]["recall@сутки"]
+        incidents = sum(incident_value(row, k, "precision_подтверждённых")
+                        + incident_value(row, k, "recall_подтверждённых")
+                        for k in ("задымление", "подтопление", "проникновение")) / 6
+        return failures + incidents
+
+    closing = [c for c in configurations if targets_met(c)]
+    if closing:
+        most = max(targets_met(c) for c in closing)
+        return min((c for c in closing if targets_met(c) == most),
+                   key=lambda c: c["каналов"])
+
+    best = max(configurations, key=score)
+    cheapest = min((c for c in configurations if score(c) >= score(best) * 0.97),
+                   key=lambda c: c["каналов"])
+    return cheapest

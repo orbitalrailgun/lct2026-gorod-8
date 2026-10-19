@@ -93,3 +93,68 @@ def test_every_page_answers_for_dispatcher(dispatcher, base_url):
         ui.open_page(dispatcher, base_url, path, expect=marker or None)
         assert "Server error" not in dispatcher.page_source, f"ошибка на {path}"
         assert "Traceback" not in dispatcher.page_source, f"исключение на {path}"
+
+
+# ------------------------------------------------- страница «Точность»
+
+def test_improve_page_states_the_question(dispatcher, base_url):
+    """Страница обязана начинаться с вопроса, а не с ответа."""
+    ui.open_page(dispatcher, base_url, "/improve",
+                 expect="Повышение точности прогноза")
+    body = dispatcher.find_element("tag name", "body").text
+    assert "датчиков" in body
+    assert "синтетическ" in body.lower(), "нет оговорки о синтетике"
+
+
+def test_improve_page_separates_new_failures_from_continuation(dispatcher, base_url):
+    """Главная поправка на честность должна быть на экране.
+
+    Заявленные 18 % держатся на каналах, которые уже сообщают о
+    неисправности. Если это разделение исчезнет со страницы, рекомендация
+    по дооснащению будет опираться на цифру, измеряющую не то, что
+    заказчик собирается покупать.
+    """
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    body = dispatcher.find_element("tag name", "body").text
+    assert "Новый отказ" in body, "нет популяции новых отказов"
+    assert "Продолжение" in body, "нет популяции продолжающихся отказов"
+    assert "77" in body and "23" in body, "нет долей популяций"
+
+
+def test_improve_page_draws_experiment_charts(dispatcher, base_url):
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    ui.wait(dispatcher, lambda d: len(ui.canvases(d)) >= 3,
+            message="диаграммы страницы точности не отрисованы")
+
+
+def test_improve_page_does_not_claim_precision_for_incidents(dispatcher, base_url):
+    """Для инцидентов Precision сервиса не существует, и страница это говорит.
+
+    Записка обещает организаторам, что Precision детектора не заявляется:
+    разметки нет. Если страница назовёт синтетическую величину точностью
+    сервиса, два документа комплекта будут противоречить друг другу.
+    """
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    body = dispatcher.find_element("tag name", "body").text
+    assert "доля подтверждённых" in body.lower(), \
+        "величина для инцидентов названа не так, как обещано в записке"
+
+
+def test_experiment_verdicts_are_marked_and_not_actionable(dispatcher, base_url):
+    """Синтетика в очереди: помечена и без кнопок фиксации решения."""
+    ui.open_page(dispatcher, base_url, "/", expect="")
+    body = dispatcher.find_element("tag name", "body").text
+    if "синтетическ" not in body.lower():
+        pytest.skip("вердикты экспериментального объекта не загружены")
+    assert "в счётчики, отчёты и выгрузки не входят" in body
+    assert "решения по ним не фиксируются" in body, \
+        "на уровне объекта не сказано, что решения не фиксируются"
+
+    # Та же метка обязана быть и на самой карточке вердикта, иначе
+    # диспетчер увидит её только если прочитает заголовок блока.
+    # Карточки наполняются по клику, поэтому блок раскрывается.
+    ui.expand(dispatcher, "Вердикты объекта", index=-1,
+              appears="решения не фиксируются")
+    assert "экспериментальный объект: решения не фиксируются" in \
+        dispatcher.find_element("tag name", "body").text, \
+        "по синтетическому вердикту предлагается зафиксировать решение"

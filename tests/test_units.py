@@ -280,3 +280,140 @@ def test_title_declension():
                               picket=906)
     assert "на объекте Гамма" in title
     assert "МРСБ АВ ПК906" in title, "технические имена не должны терять регистр"
+
+
+# ------------------------------------------- изоляция синтетического объекта
+
+def test_synthetic_verdict_cannot_be_acknowledged():
+    """Решения диспетчера — будущая настоящая разметка.
+
+    Вердикты экспериментального объекта живут в файле и имеют отрицательные
+    идентификаторы. Если по такому вердикту можно будет зафиксировать
+    решение, выдуманные события попадут в таблицу decision и отравят ровно
+    те данные, которыми проект обещает заменить синтез. Проверка стоит
+    в слое доступа к данным, а не в интерфейсе, и тест это закрепляет.
+    """
+    from core import db
+    for bad in (-1, -42, 0, None):
+        with pytest.raises(ValueError):
+            db._real_verdict(bad)
+
+
+def test_real_verdict_passes_through():
+    from core import db
+    assert db._real_verdict(17) == 17
+    assert db._real_verdict("23") == 23
+
+
+def test_work_order_rejects_synthetic_verdict():
+    """Черновик заявки по синтетическому вердикту тоже недопустим."""
+    from core import db
+    with pytest.raises(ValueError):
+        db.create_work_order(None, {"verdict_id": -3, "work_type": "осмотр",
+                                    "priority": "обычный"})
+
+
+# ------------------------------- устойчивость страницы к версии файла данных
+
+def test_experiment_truth_reads_both_file_versions():
+    """В образ копируется seed-файл, и он может оказаться старее кода.
+
+    В прежней версии суммарная истина звалась «истина» и хранила списки
+    событий, а не их число. Падение страницы здесь означало бы пустой
+    экран вместо ответа на вопрос организаторов, поэтому обе версии
+    обязаны читаться.
+    """
+    new = {"истина_суммарно": {"failures": 442, "fires": 18}}
+    assert cards.experiment_truth(new) == {"failures": 442, "fires": 18}
+
+    old = {"истина": {"failures": [1, 2, 3], "fires": [{"picket": 7}]}}
+    assert cards.experiment_truth(old) == {"failures": 3, "fires": 1}
+
+    assert cards.experiment_truth({}) == {}
+    assert cards.experiment_truth(None) == {}
+
+
+def test_incident_value_degrades_instead_of_crashing():
+    """Метрики подтверждения появились позже — их может не быть в файле."""
+
+    row = {"инциденты": {"задымление": {"precision": 0.022,
+                                        "precision_подтверждённых": 1.0}}}
+    assert cards.incident_value(row, "задымление", "precision") == 0.022
+    assert cards.incident_value(row, "задымление", "recall_подтверждённых") == 0.0
+    assert cards.incident_value(row, "подтопление", "precision") == 0.0
+    assert cards.incident_value({}, "задымление", "precision") == 0.0
+    assert cards.incident_value(row, "задымление", "суток_прогона_ТО", 0) == 0
+
+
+# --------------------------------- выбор рекомендуемой конфигурации
+
+def _cfg(name, channels, recall, precision, incidents):
+    """Строка сетки конфигураций в том виде, в каком её пишет эксперимент."""
+    full = {k: {"precision_подтверждённых": 0.0, "recall_подтверждённых": 0.0}
+            for k in cards.SCENARIOS}
+    full.update(incidents)
+    return {"конфигурация": name, "каналов": channels,
+            "отказы": {"recall@сутки": recall, "precision@50": precision},
+            "инциденты": full}
+
+
+def test_recommendation_prefers_closing_targets_over_total_score():
+    """Вопрос организаторов — что поставить, чтобы ПОКАЗАТЕЛИ достигли
+    требуемых. Поэтому сначала число закрытых сценариев, потом цена.
+
+    Прежнее правило складывало метрики в один балл и склонялось к ответу
+    «поставьте всё»: богатая конфигурация почти всегда набирает больше
+    баллов, но из этого не следует, что остальное нужно.
+    """
+    grid = [
+        _cfg("как сейчас", 400, 0.23, 0.03, {}),
+        # богатая, но ни один порог не взят
+        _cfg("много датчиков", 1800, 0.60, 0.05,
+             {k: {"precision_подтверждённых": 0.4,
+                  "recall_подтверждённых": 0.45} for k in cards.SCENARIOS}),
+        # скромная, но закрывает сценарий целиком
+        _cfg("+ тепловой контроль", 600, 0.15, 0.04,
+             {"задымление": {"precision_подтверждённых": 1.0,
+                             "recall_подтверждённых": 0.55}}),
+    ]
+    best = cards.recommended(grid)
+    assert best["конфигурация"] == "+ тепловой контроль", \
+        "выбрана конфигурация с большим баллом вместо закрывающей порог"
+    assert cards.targets_met(best) == 1
+
+
+def test_recommendation_takes_cheapest_among_equally_closing():
+    grid = [
+        _cfg("дорогая", 2000, 0.15, 0.04,
+             {"задымление": {"precision_подтверждённых": 1.0,
+                             "recall_подтверждённых": 0.55}}),
+        _cfg("дешёвая", 700, 0.15, 0.04,
+             {"задымление": {"precision_подтверждённых": 0.9,
+                             "recall_подтверждённых": 0.52}}),
+    ]
+    assert cards.recommended(grid)["конфигурация"] == "дешёвая"
+
+
+def test_recommendation_falls_back_when_nothing_closes():
+    """Если не закрыт ни один сценарий, ответ слабее — но он есть."""
+    grid = [
+        _cfg("как сейчас", 400, 0.23, 0.03, {}),
+        _cfg("побогаче", 600, 0.40, 0.05,
+             {"задымление": {"precision_подтверждённых": 0.3,
+                             "recall_подтверждённых": 0.3}}),
+    ]
+    best = cards.recommended(grid)
+    assert cards.targets_met(best) == 0
+    assert best["конфигурация"] == "побогаче"
+
+
+def test_targets_met_requires_both_thresholds():
+    """Одной точности недостаточно: нужна и полнота."""
+    only_precision = _cfg("точность", 500, 0.1, 0.1,
+                          {"задымление": {"precision_подтверждённых": 1.0,
+                                          "recall_подтверждённых": 0.39}})
+    only_recall = _cfg("полнота", 500, 0.1, 0.1,
+                       {"задымление": {"precision_подтверждённых": 0.5,
+                                       "recall_подтверждённых": 0.8}})
+    assert cards.targets_met(only_precision) == 0
+    assert cards.targets_met(only_recall) == 0
