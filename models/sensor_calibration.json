@@ -1,0 +1,603 @@
+{
+ "измерено": "на поставленных данных, отложенный период 2025-01-01..2026-06-30",
+ "поведение_датчиков": [
+  {
+   "sensor_type": "Датчик дыма",
+   "channels": 4337,
+   "events_per_active_day": 6.57,
+   "median_events": 2.0,
+   "active_share": 0.073,
+   "channel_days": 1801911.0,
+   "failures": 1222.0,
+   "daily_failure_rate": 0.000678
+  },
+  {
+   "sensor_type": "Состояние фазы",
+   "channels": 957,
+   "events_per_active_day": 8.06,
+   "median_events": 2.0,
+   "active_share": 0.244,
+   "channel_days": 0.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  },
+  {
+   "sensor_type": "КД Дверь",
+   "channels": 917,
+   "events_per_active_day": 7.48,
+   "median_events": 2.0,
+   "active_share": 0.2008,
+   "channel_days": 465413.0,
+   "failures": 124.0,
+   "daily_failure_rate": 0.000266
+  },
+  {
+   "sensor_type": "Датчик движения",
+   "channels": 804,
+   "events_per_active_day": 60.95,
+   "median_events": 6.0,
+   "active_share": 0.1985,
+   "channel_days": 416763.0,
+   "failures": 138.0,
+   "daily_failure_rate": 0.000331
+  },
+  {
+   "sensor_type": "Переключатель",
+   "channels": 801,
+   "events_per_active_day": 5.96,
+   "median_events": 2.0,
+   "active_share": 0.3245,
+   "channel_days": 393149.0,
+   "failures": 1.0,
+   "daily_failure_rate": 3e-06
+  },
+  {
+   "sensor_type": "Состояние УИР-Р",
+   "channels": 762,
+   "events_per_active_day": 27.53,
+   "median_events": 2.0,
+   "active_share": 0.0663,
+   "channel_days": 385022.0,
+   "failures": 160.0,
+   "daily_failure_rate": 0.000416
+  },
+  {
+   "sensor_type": "Датчик температуры",
+   "channels": 600,
+   "events_per_active_day": 3.81,
+   "median_events": 2.0,
+   "active_share": 0.2838,
+   "channel_days": 300208.0,
+   "failures": 317.0,
+   "daily_failure_rate": 0.001056
+  },
+  {
+   "sensor_type": "Газовый датчик",
+   "channels": 529,
+   "events_per_active_day": 277.5,
+   "median_events": 64.0,
+   "active_share": 0.4072,
+   "channel_days": 250034.0,
+   "failures": 113.0,
+   "daily_failure_rate": 0.000452
+  },
+  {
+   "sensor_type": "Тепловой датчик",
+   "channels": 472,
+   "events_per_active_day": 10.51,
+   "median_events": 2.0,
+   "active_share": 0.033,
+   "channel_days": 208857.0,
+   "failures": 30.0,
+   "daily_failure_rate": 0.000144
+  },
+  {
+   "sensor_type": "КД АВ",
+   "channels": 397,
+   "events_per_active_day": 7.41,
+   "median_events": 2.0,
+   "active_share": 0.1027,
+   "channel_days": 207131.0,
+   "failures": 169.0,
+   "daily_failure_rate": 0.000816
+  },
+  {
+   "sensor_type": "Состояние вентилятора",
+   "channels": 354,
+   "events_per_active_day": 5.73,
+   "median_events": 2.0,
+   "active_share": 0.4582,
+   "channel_days": 0.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  },
+  {
+   "sensor_type": "Состояние насоса",
+   "channels": 180,
+   "events_per_active_day": 18.31,
+   "median_events": 5.0,
+   "active_share": 0.2479,
+   "channel_days": 0.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  },
+  {
+   "sensor_type": "Ручной извещатель",
+   "channels": 130,
+   "events_per_active_day": 9.72,
+   "median_events": 2.0,
+   "active_share": 0.1076,
+   "channel_days": 35740.0,
+   "failures": 107.0,
+   "daily_failure_rate": 0.002994
+  },
+  {
+   "sensor_type": "ИБП",
+   "channels": 80,
+   "events_per_active_day": 5.66,
+   "median_events": 2.0,
+   "active_share": 0.1006,
+   "channel_days": 0.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  },
+  {
+   "sensor_type": "КД Люк",
+   "channels": 55,
+   "events_per_active_day": 5.14,
+   "median_events": 2.0,
+   "active_share": 0.0461,
+   "channel_days": 27525.0,
+   "failures": 16.0,
+   "daily_failure_rate": 0.000581
+  },
+  {
+   "sensor_type": "Состояние охраны",
+   "channels": 47,
+   "events_per_active_day": 5.14,
+   "median_events": 4.0,
+   "active_share": 0.5518,
+   "channel_days": 0.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  },
+  {
+   "sensor_type": "Стекло",
+   "channels": 29,
+   "events_per_active_day": 6.32,
+   "median_events": 2.0,
+   "active_share": 0.1023,
+   "channel_days": 15377.0,
+   "failures": 1.0,
+   "daily_failure_rate": 6.5e-05
+  },
+  {
+   "sensor_type": "Датчик затопления",
+   "channels": 25,
+   "events_per_active_day": 4.05,
+   "median_events": 2.0,
+   "active_share": 0.0475,
+   "channel_days": 12416.0,
+   "failures": 3.0,
+   "daily_failure_rate": 0.000242
+  },
+  {
+   "sensor_type": "9-секционный люк",
+   "channels": 9,
+   "events_per_active_day": 2.83,
+   "median_events": 2.0,
+   "active_share": 0.0828,
+   "channel_days": 767.0,
+   "failures": 0.0,
+   "daily_failure_rate": 0.0
+  }
+ ],
+ "предвестник_отказа": {
+  "признаки": {
+   "fault_ev_7d": {
+    "перед отказом": 143.3957,
+    "обычно": 0.1584,
+    "отношение": 905.5
+   },
+   "fault_days_30d": {
+    "перед отказом": 1.2174,
+    "обычно": 0.0537,
+    "отношение": 22.7
+   },
+   "undefined_ev_7d": {
+    "перед отказом": 24.4956,
+    "обычно": 1.3059,
+    "отношение": 18.8
+   },
+   "ev_7d": {
+    "перед отказом": 628.0929,
+    "обычно": 129.9474,
+    "отношение": 4.8
+   },
+   "dev_days_7d": {
+    "перед отказом": 0.8042,
+    "обычно": 0.4657,
+    "отношение": 1.7
+   },
+   "domain_dev_share_7d": {
+    "перед отказом": 0.2525,
+    "обычно": 0.1213,
+    "отношение": 2.1
+   },
+   "base_failed_share_7d": {
+    "перед отказом": 0.0826,
+    "обычно": 0.0679,
+    "отношение": 1.2
+   },
+   "silence_days": {
+    "перед отказом": 17.9892,
+    "обычно": 23.3593,
+    "отношение": 0.8
+   }
+  },
+  "ранний_сигнал": [
+   {
+    "horizon": 1,
+    "with_fault": 0.1864,
+    "with_undefined": 0.3417
+   },
+   {
+    "horizon": 3,
+    "with_fault": 0.1587,
+    "with_undefined": 0.3556
+   },
+   {
+    "horizon": 7,
+    "with_fault": 0.1174,
+    "with_undefined": 0.3774
+   },
+   {
+    "horizon": 14,
+    "with_fault": 0.0757,
+    "with_undefined": 0.2855
+   },
+   {
+    "horizon": 30,
+    "with_fault": 0.0811,
+    "with_undefined": 0.2807
+   }
+  ]
+ },
+ "оснащённость_точек": [
+  {
+   "n_types": 1,
+   "points": 2499,
+   "channels": 3645.0
+  },
+  {
+   "n_types": 2,
+   "points": 661,
+   "channels": 2208.0
+  },
+  {
+   "n_types": 3,
+   "points": 303,
+   "channels": 1454.0
+  },
+  {
+   "n_types": 4,
+   "points": 130,
+   "channels": 1113.0
+  },
+  {
+   "n_types": 5,
+   "points": 93,
+   "channels": 972.0
+  },
+  {
+   "n_types": 6,
+   "points": 70,
+   "channels": 858.0
+  },
+  {
+   "n_types": 7,
+   "points": 17,
+   "channels": 311.0
+  },
+  {
+   "n_types": 8,
+   "points": 1,
+   "channels": 16.0
+  }
+ ],
+ "инцидентные_процессы": {
+  "насосы": {
+   "mean": 8.01,
+   "median": 3.0,
+   "p90": 17.0,
+   "p99": 93.0,
+   "max": 1777.0,
+   "по месяцам": [
+    {
+     "month": 1,
+     "starts": 3.56
+    },
+    {
+     "month": 2,
+     "starts": 3.44
+    },
+    {
+     "month": 3,
+     "starts": 9.31
+    },
+    {
+     "month": 4,
+     "starts": 6.88
+    },
+    {
+     "month": 5,
+     "starts": 4.47
+    },
+    {
+     "month": 6,
+     "starts": 5.17
+    },
+    {
+     "month": 7,
+     "starts": 3.68
+    },
+    {
+     "month": 8,
+     "starts": 2.98
+    },
+    {
+     "month": 9,
+     "starts": 2.35
+    },
+    {
+     "month": 10,
+     "starts": 2.89
+    },
+    {
+     "month": 11,
+     "starts": 4.47
+    },
+    {
+     "month": 12,
+     "starts": 3.39
+    }
+   ]
+  },
+  "задымление": [
+   {
+    "is_sweep": false,
+    "episodes": 14088,
+    "channels": 1.99,
+    "triggers": 4.15,
+    "with_thermal": 0.1366,
+    "point_channels": 4.27
+   },
+   {
+    "is_sweep": true,
+    "episodes": 36476,
+    "channels": 1.9,
+    "triggers": 2.76,
+    "with_thermal": 0.1046,
+    "point_channels": 3.26
+   }
+  ],
+  "проникновение": {
+   "triggers": 23.93,
+   "median": 4.0,
+   "types": 1.44,
+   "minutes": 97.0,
+   "night_share": 0.0148
+  },
+  "температура": {
+   "mean": 17.39,
+   "daily_range": 2.27,
+   "spread_between_points": 6.7,
+   "sensors_per_point": 1.17
+  },
+  "домены": [
+   {
+    "channels": 1,
+    "domains": 1823
+   },
+   {
+    "channels": 2,
+    "domains": 826
+   },
+   {
+    "channels": 3,
+    "domains": 389
+   },
+   {
+    "channels": 4,
+    "domains": 178
+   },
+   {
+    "channels": 5,
+    "domains": 161
+   },
+   {
+    "channels": 6,
+    "domains": 69
+   },
+   {
+    "channels": 7,
+    "domains": 62
+   },
+   {
+    "channels": 8,
+    "domains": 50
+   },
+   {
+    "channels": 9,
+    "domains": 42
+   },
+   {
+    "channels": 10,
+    "domains": 19
+   },
+   {
+    "channels": 11,
+    "domains": 24
+   },
+   {
+    "channels": 12,
+    "domains": 15
+   },
+   {
+    "channels": 13,
+    "domains": 18
+   },
+   {
+    "channels": 14,
+    "domains": 8
+   },
+   {
+    "channels": 15,
+    "domains": 6
+   },
+   {
+    "channels": 16,
+    "domains": 8
+   },
+   {
+    "channels": 17,
+    "domains": 8
+   },
+   {
+    "channels": 18,
+    "domains": 8
+   },
+   {
+    "channels": 19,
+    "domains": 8
+   },
+   {
+    "channels": 20,
+    "domains": 3
+   },
+   {
+    "channels": 21,
+    "domains": 3
+   },
+   {
+    "channels": 23,
+    "domains": 3
+   },
+   {
+    "channels": 24,
+    "domains": 3
+   },
+   {
+    "channels": 25,
+    "domains": 1
+   },
+   {
+    "channels": 26,
+    "domains": 2
+   },
+   {
+    "channels": 27,
+    "domains": 3
+   },
+   {
+    "channels": 28,
+    "domains": 2
+   },
+   {
+    "channels": 30,
+    "domains": 1
+   },
+   {
+    "channels": 31,
+    "domains": 1
+   },
+   {
+    "channels": 32,
+    "domains": 4
+   },
+   {
+    "channels": 35,
+    "domains": 1
+   },
+   {
+    "channels": 36,
+    "domains": 2
+   },
+   {
+    "channels": 37,
+    "domains": 1
+   },
+   {
+    "channels": 40,
+    "domains": 1
+   },
+   {
+    "channels": 41,
+    "domains": 1
+   },
+   {
+    "channels": 42,
+    "domains": 1
+   },
+   {
+    "channels": 47,
+    "domains": 1
+   },
+   {
+    "channels": 51,
+    "domains": 1
+   },
+   {
+    "channels": 53,
+    "domains": 1
+   },
+   {
+    "channels": 55,
+    "domains": 1
+   }
+  ]
+ },
+ "вклад_наблюдаемости": {
+  "исходно": {
+   "precision@50": 0.18,
+   "precision@100": 0.14
+  },
+  "группы": {
+   "окружение": {
+    "смысл": "соседние датчики в той же точке",
+    "даёт": "подтверждение события вторым прибором",
+    "precision@50": 0.2,
+    "precision@100": 0.17,
+    "потеря@50": -0.02
+   },
+   "инфраструктура": {
+    "смысл": "состояние других каналов того же контроллера",
+    "даёт": "видимость каскада по питающей линии",
+    "precision@50": 0.02,
+    "precision@100": 0.07,
+    "потеря@50": 0.16
+   },
+   "связь": {
+    "смысл": "потери связи с каналом",
+    "даёт": "контроль линии до прибора",
+    "precision@50": 0.16,
+    "precision@100": 0.14,
+    "потеря@50": 0.02
+   },
+   "молчание": {
+    "смысл": "регулярность выхода на связь",
+    "даёт": "периодичность опроса",
+    "precision@50": 0.14,
+    "precision@100": 0.13,
+    "потеря@50": 0.04
+   },
+   "самодиагностика": {
+    "смысл": "собственные сообщения прибора о неисправности",
+    "даёт": "прибор, умеющий сообщать о своём состоянии",
+    "precision@50": 0.02,
+    "precision@100": 0.02,
+    "потеря@50": 0.16
+   }
+  }
+ }
+}
