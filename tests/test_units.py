@@ -417,3 +417,99 @@ def test_targets_met_requires_both_thresholds():
                                        "recall_подтверждённых": 0.8}})
     assert cards.targets_met(only_precision) == 0
     assert cards.targets_met(only_recall) == 0
+
+
+# ------------------------------------------------------- словарь терминов
+
+def test_glossary_explains_every_term_it_uses():
+    """Объяснение не должно вводить слово, которого нет в словаре.
+
+    Правило простое: если в объяснении встречается служебное имя признака
+    или редкий термин, он обязан быть объяснён здесь же. Проверяется
+    на именах признаков — именно они режут глаз непод­готовленному
+    читателю.
+    """
+    from core import glossary
+    from core.features import FEATURE_NAMES
+
+    explained = " ".join(t for t in glossary.terms())
+    body = " ".join(m for _, items in glossary.GLOSSARY for _, m in items)
+    for name in FEATURE_NAMES:
+        if name in body:
+            assert name in explained, \
+                f"признак {name} упомянут в объяснении, но сам не объяснён"
+
+
+def test_glossary_has_no_empty_entries():
+    from core import glossary
+    for title, items in glossary.GLOSSARY:
+        assert title.strip(), "группа без названия"
+        assert items, f"пустая группа «{title}»"
+        for term, meaning in items:
+            assert term.strip(), f"термин без названия в «{title}»"
+            assert len(meaning) > 40, \
+                f"объяснение «{term}» слишком короткое, чтобы что-то объяснить"
+
+
+def test_glossary_document_is_in_sync():
+    """Словарь в PDF собирается из того же источника, что страница.
+
+    Если документ отстал, расхождение найдёт эксперт, а не мы. Лечится
+    командой `python -m scripts.15_sync_glossary`.
+    """
+    import os
+    from core import config, glossary
+
+    path = os.path.join(config.ROOT, "docs", "17-повышение-точности.md")
+    with open(path, encoding="utf-8") as fh:
+        doc = fh.read()
+    missing = [t for t in glossary.terms() if f"**{t}.**" not in doc]
+    assert not missing, (
+        "документ отстал от словаря, не хватает: "
+        + ", ".join(missing[:5])
+        + ". Запустите python -m scripts.15_sync_glossary")
+
+
+def test_experiment_table_is_in_sync_with_documents():
+    """Таблица конфигураций в документах собирается из того же расчёта.
+
+    Однажды подпись «дым: доля подтв.» означала на экране долю настоящих
+    среди всех сработок (2,2 %), а в записке — долю настоящих среди
+    подтверждённых (0 или 100 %). Один столбец показывал разные числа
+    в двух документах комплекта. Лечится командой
+    `python -m scripts.16_sync_experiment_tables`.
+    """
+    import os
+    from core import config, glossary
+
+    for name, keys in (("17-повышение-точности.md",
+                        list(glossary.GRID_LABELS)),
+                       ("13-пояснительная-записка.md",
+                        ["конфигурация", "каналов", "отказы_полнота",
+                         "дым_подтв_точность", "дым_подтв_полнота"])):
+        path = os.path.join(config.ROOT, "docs", name)
+        with open(path, encoding="utf-8") as fh:
+            doc = fh.read()
+        for key in keys:
+            label = glossary.GRID_LABELS[key].capitalize()
+            assert label in doc, (
+                f"{name}: нет столбца «{label}». Запустите "
+                "python -m scripts.16_sync_experiment_tables")
+
+
+def test_grid_labels_do_not_use_ambiguous_abbreviations():
+    """Подписи столбцов не сокращаются: сокращение читается каждым по-своему.
+
+    «доля подтв.» можно прочитать и как долю подтверждённых среди
+    настоящих, и как долю настоящих среди подтверждённых. Решение
+    о закупке принимают по этой таблице, поэтому подписи длинные.
+    """
+    from core import glossary
+
+    for key, label in glossary.GRID_LABELS.items():
+        assert "подтв." not in label, f"сокращение в подписи «{label}»"
+        assert "(синт.)" not in label, f"непонятная пометка в «{label}»"
+    # величины про дым должны называть, что именно считается
+    smoke = [v for k, v in glossary.GRID_LABELS.items() if k.startswith("дым")]
+    assert len(smoke) == 4
+    assert len(set(smoke)) == 4, "две колонки про дым названы одинаково"

@@ -158,3 +158,54 @@ def test_experiment_verdicts_are_marked_and_not_actionable(dispatcher, base_url)
     assert "экспериментальный объект: решения не фиксируются" in \
         dispatcher.find_element("tag name", "body").text, \
         "по синтетическому вердикту предлагается зафиксировать решение"
+
+
+def test_improve_page_answers_before_it_explains(dispatcher, base_url):
+    """Вывод должен быть виден до статистики.
+
+    Страницу читают, чтобы принять решение о закупке. Если ответ окажется
+    после выкладок, его не прочитают — поэтому блок «Коротко» стоит
+    первым, и проверяется именно порядок, а не наличие.
+    """
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    body = dispatcher.find_element("tag name", "body").text
+    assert "Коротко" in body, "нет короткого ответа"
+    assert body.index("Коротко") < body.index("канало-суток"), \
+        "вывод оказался после статистики"
+    assert "Если нужна одна строка для решения" in body
+
+
+def test_improve_page_glossary_opens_and_explains(dispatcher, base_url):
+    """Словарь скрыт, но раскрывается и объясняет термины страницы.
+
+    Наполнение ленивое, поэтому до раскрытия его в разметке нет —
+    так и задумано: сорок с лишним пояснений на каждой загрузке
+    страницы это лишний вес.
+    """
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    body = dispatcher.find_element("tag name", "body").text
+    assert "пояснени" in body, "нет блока словаря"
+    assert "Канало-сутки" not in body, "словарь отрисован до раскрытия"
+
+    ui.expand(dispatcher, "Что значат термины", appears="Пикет")
+    opened = dispatcher.find_element("tag name", "body").text
+    for term in ("Пикет", "Канало-сутки", "Самодиагностика", "Плацебо",
+                 "Доля подтверждённых", "Порог срабатывания"):
+        assert term in opened, f"в словаре нет термина «{term}»"
+    assert "десять метров" in opened, "пикет объяснён без единиц"
+
+
+def test_improve_page_glossary_covers_terms_used_on_page(dispatcher, base_url):
+    """Каждое служебное имя, попавшее на страницу, должно быть объяснено."""
+    from core import glossary
+
+    ui.open_page(dispatcher, base_url, "/improve", expect="Повышение точности")
+    page = dispatcher.find_element("tag name", "body").text
+    ui.expand(dispatcher, "Что значат термины", appears="Пикет")
+    explained = dispatcher.find_element("tag name", "body").text
+
+    for name in ("domain_size", "domain_dev_share_7d", "domain_silent_share"):
+        if name in page:
+            assert name in explained, \
+                f"{name} показан на странице, но не объяснён в словаре"
+    assert len(glossary.terms()) >= 40, "словарь подозрительно короткий"
